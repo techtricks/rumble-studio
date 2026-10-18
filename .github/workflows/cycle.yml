@@ -38,9 +38,10 @@ jobs:
           cache: pip
 
       - name: Fonts + system deps
-        # ffmpeg is preinstalled on GitHub runners. Fonts matter: captions
-        # draw with a real typeface, and the runner image ships few.
-        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends fonts-noto-core fonts-noto-cjk
+        # ffmpeg is NOT on the runner image any more (2026): the render stage
+        # hard-requires it. Fonts matter too: captions draw with a real
+        # typeface, and the runner image ships few.
+        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends ffmpeg fonts-noto-core fonts-noto-cjk
 
       - name: Python deps
         run: |
