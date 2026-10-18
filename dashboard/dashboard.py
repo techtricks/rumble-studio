@@ -27,16 +27,23 @@ from pathlib import Path
 
 ROOT = Path(__file__).resolve().parent.parent
 DB = ROOT / "data" / "ytauto.db"
+CI_DB = ROOT / "data" / "ci" / "ytauto.db"   # synced from GitHub Actions
 LOG = ROOT / "data" / "logs" / "launchd.log"
 ENV = ROOT / ".env"
 MEDIA = ROOT / "data" / "media"
 PORT = 8600
 
 
+def active_db() -> Path:
+    """The cloud (GitHub Actions) DB wins whenever it has synced."""
+    return CI_DB if CI_DB.exists() else DB
+
+
 def db_rows(sql: str, args: tuple = ()) -> list[dict]:
-    if not DB.exists():
+    db = active_db()
+    if not db.exists():
         return []
-    conn = sqlite3.connect(f"file:{DB}?mode=ro", uri=True)
+    conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
     conn.row_factory = sqlite3.Row
     try:
         return [dict(r) for r in conn.execute(sql, args)]
@@ -83,6 +90,23 @@ def api_status() -> dict:
     last_run = runs[0] if runs else None
     running = _live_cycle()
 
+    # Online mode: cloud (GitHub Actions) activity drives the live badge and
+    # the heartbeat — the Mac's own cycle is of historical interest only.
+    ci = ci_sync.run_status()
+    online = CI_DB.exists()
+    if online:
+        active = [r for r in ci.get("runs") or []
+                  if r.get("status") in ("in_progress", "queued")]
+        if active:
+            running = {"running": True,
+                       "procs": [f"github-actions run #{active[0].get('number', '')}"]}
+        heartbeat = None
+        for r in ci.get("runs") or []:
+            if r.get("status") == "completed":
+                heartbeat = {"last_start": r.get("created_at"),
+                             "last_end": r.get("updated_at")}
+                break
+
     # scheduler heartbeat from the launchd log
     heartbeat = None
     if LOG.exists():
@@ -104,6 +128,8 @@ def api_status() -> dict:
         "live": running,
         "heartbeat": heartbeat,
         "cycle_state": "RUNNING NOW" if running["running"] else ("idle" if heartbeat else "never run"),
+        "source": "cloud" if online else "mac",
+        "ci_synced_at": ci.get("synced_at"),
         "video_counts": counts,
         "topic_counts": topic_counts,
         "videos_alive": alive,
@@ -595,7 +621,10 @@ function render(){
   const s = D.status;
   document.getElementById('live').className = 'livebadge ' + (s.cycle_state==='RUNNING NOW'?'on':'off');
   document.getElementById('livetext').textContent = s.cycle_state;
-  document.getElementById('meta').textContent = 'updated ' + s.now;
+  document.getElementById('meta').textContent =
+    'updated ' + s.now + (s.source==='cloud'
+      ? ' · ☁ live (GitHub Actions' + (s.ci_synced_at ? ' · sync ' + s.ci_synced_at : '') + ')'
+      : ' · ⛁ local');
   if (view==='dash'){ renderCards(s); renderPanels(s); }
   else if (view==='videos') renderVideos();
   else if (view==='topics') renderTopics();
@@ -619,5 +648,13 @@ refresh(); setInterval(refresh, 5000);
 
 if __name__ == "__main__":
     PAGE = PAGE.replace("{{CHANNEL}}", "https://rumble.com/c/IndianHistoryOfficial")
+    import threading
+    try:
+        import ci_sync  # noqa: E402 - same directory as this script
+
+        threading.Thread(target=ci_sync.loop, daemon=True,
+                         name="ci-sync").start()
+    except Exception as exc:  # noqa: BLE001 - dashboard still works local-only
+        print(f"ci-sync disabled: {exc}", flush=True)
     print(f"ytauto dashboard → http://localhost:{PORT}", flush=True)
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()

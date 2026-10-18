@@ -79,20 +79,21 @@ jobs:
         # A render failure of "ffmpeg not found" was the CI's fault, not the
         # script's: those scripts are good and re-approved instead of
         # rotting as permanent failures.
-        run: python - <<'PY'
-from ytauto.db import get_db
-db = get_db()
-rows = db.conn.execute(
-    "select id, error from videos where status='failed'"
-).fetchall()
-repaired = 0
-for r in rows:
-    if "ffmpeg not found" in (r["error"] or ""):
-        db.set_status(r["id"], "approved")
-        db.release(r["id"], owner="youtube/repair")
-        repaired += 1
-print(f"repaired {repaired} ffmpeg-blocked videos")
-PY
+        run: |
+          python - <<'PY'
+          from ytauto.db import get_db
+          db = get_db()
+          rows = db.conn.execute(
+              "select id, error from videos where status='failed'"
+          ).fetchall()
+          repaired = 0
+          for r in rows:
+              if "ffmpeg not found" in (r["error"] or ""):
+                  db.set_status(r["id"], "approved")
+                  db.release(r["id"], owner="youtube/repair")
+                  repaired += 1
+          print(f"repaired {repaired} ffmpeg-blocked videos")
+          PY
 
       - name: Rumble session (optional secret)
         env:
