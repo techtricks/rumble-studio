@@ -1,0 +1,60 @@
+# --- secrets and credentials. Never commit these.
+.env
+secrets/
+*.token.json
+client_secret*.json
+token.json
+
+# --- generated state. The database and rendered media are rebuildable, and the
+# database in particular is machine-local (it holds the token path, quota
+# ledger and per-channel state).
+data/
+*.db
+*.db-journal
+*.db-wal
+*.db-shm
+data/media/
+data/logs/
+out/
+
+# Renders are named <video_id>.<ext>, so they are only ignored under the media
+# dir. A blanket *.mp4/*.jpg would also hide a checked-in logo or fixture.
+data/media/*.mp4
+data/media/*.wav
+data/media/*.srt
+data/media/*.jpg
+data/media/*.png
+
+# --- the vendored ffmpeg is a ~100MB binary; `make ffmpeg` / the setup script
+# fetches it, so don't commit it. (Delete these two lines if you would rather
+# track the binary in-repo so clones work with no download step.)
+vendor/ffmpeg/ffmpeg
+vendor/ffmpeg/ffprobe
+
+# --- python
+.venv/
+venv/
+__pycache__/
+*.py[cod]
+*.egg-info/
+build/
+dist/
+.pytest_cache/
+.coverage
+htmlcov/
+.mypy_cache/
+.ruff_cache/
+
+# --- editors / os
+.DS_Store
+.idea/
+.vscode/
+*.swp
+
+# --- other projects that live in this folder, not part of the pipeline
+tech-tricks-hub/
+untitled folder/
+
+# --- huge local archives discovered later (not part of the codebase)
+*.rar
+youtube-automation/

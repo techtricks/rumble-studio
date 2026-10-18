@@ -1,0 +1,30 @@
+# Runtime dependencies for yt-automation.
+# Install with:  .venv/bin/pip install -r requirements.txt
+#
+# Deliberately unpinned upper bounds: these are all actively developed packages
+# and pinning exact versions here would mean the venv and the file drift apart.
+# The lower bounds are the versions actually verified on this machine
+# (Python 3.9.6, macOS).
+
+# --- config / env
+python-dotenv>=1.0            # .env loading
+
+# --- topic discovery
+feedparser>=6.0               # RSS + Atom, incl. Reddit's .rss feeds
+requests>=2.31                # HTTP for feeds, with a real User-Agent
+
+# --- research and scripting
+anthropic>=0.40               # Claude messages API, structured output
+
+# --- YouTube
+google-api-python-client>=2.100   # Data v3 + Analytics v2 discovery
+google-auth>=2.30
+google-auth-oauthlib>=1.2
+google-auth-httplib2>=0.2
+
+# --- development
+pytest>=8.0
+playwright>=1.40
+# Edge-TTS: free Microsoft neural voices — the narrator for Linux deploys
+# (Oracle VPS) where macOS `say` does not exist. Optional on macOS.
+edge-tts

@@ -1,0 +1,145 @@
+name: ytauto-cycle
+
+# One full pipeline cycle per scheduled run — the always-on replacement for
+# the Mac's launchd scheduler: discover (7 genuine publishers) → script →
+# auto-approve → render (edge-tts voices) → publish to Rumble (+ short).
+# Runs on GitHub's free runners, no credit card, no separate server.
+
+on:
+  schedule:
+    # 20:00 IST daily. A steady once-a-day cadence suits the free tier and
+    # the new-channel upload pace far better than an hourly cram.
+    - cron: "0 20 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Rehearse only — no publishing, no LLM-render risk"
+        default: false
+        type: boolean
+
+concurrency:
+  group: ytauto-cycle
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read # to restore the previous run's database artifact
+
+jobs:
+  cycle:
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Fonts + system deps
+        # ffmpeg is preinstalled on GitHub runners. Fonts matter: captions
+        # draw with a real typeface, and the runner image ships few.
+        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends fonts-noto-core fonts-noto-cjk
+
+      - name: Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Browser for the Rumble uploader
+        run: playwright install --with-deps chromium
+
+      - name: Restore the state (topic bank, published status, quota ledger)
+        id: restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p data
+          # The DB is machine-local by design, so it travels as an artifact
+          # between runs instead of living in the git history.
+          art=$(gh api "repos/$REPO/actions/artifacts?name=ytauto-state&per_page=1" --jq '.artifacts[0].id // empty')
+          if [ -n "$art" ]; then
+            echo "found state artifact $art"
+            gh api "repos/$REPO/actions/artifacts/$art/zip" > state.zip
+            unzip -o state.zip -d data/    # unzip puts ytauto.db where it lives
+            rm state.zip
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: First run — seed the evergreen topic bank
+        if: ${{ steps.restore.outputs.found != 'true' }}
+        run: python tools/seed_history_topics.py
+
+      - name: Rumble session (optional secret)
+        env:
+          RUMBLE_COOKIES_B64: ${{ secrets.RUMBLE_COOKIES_B64 }}
+        run: |
+          mkdir -p secrets
+          if [ -n "$RUMBLE_COOKIES_B64" ]; then
+            printf '%s' "$RUMBLE_COOKIES_B64" | base64 -d > secrets/rumble_cookies.json
+          else
+            echo "no RUMBLE_COOKIES_B64 secret — Rumble upload will be skipped/warn"
+          fi
+
+      - name: Run the cycle
+        env:
+          # secrets
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER || 'groq' }}
+          RUMBLE_EMAIL: ${{ secrets.RUMBLE_EMAIL }}
+          RUMBLE_PASSWORD: ${{ secrets.RUMBLE_PASSWORD }}
+          RUMBLE_CHANNEL: ${{ secrets.RUMBLE_CHANNEL }}
+          # non-secret config (mirrors the Mac .env)
+          LANGUAGE: English
+          SUBTITLE_LANGUAGES: Hindi,Bengali,French
+          TARGET_AUDIENCE: "Indian history students,exam aspirants,history lovers"
+          BRAND: Indian History Facts
+          BRAND_URL: https://rumble.com/c/IndianHistoryOfficial
+          NICHE: "indian history,ancient india,mauryan empire,ashoka,gupta empire,chola dynasty,maratha empire,shivaji,mughal empire,aurangzeb,freedom struggle,revolt of 1857,indian independence,british raj,battle,war,army,warriors,fort,fortress,siege,conquest,empire,troops,cavalry,treasure,lost city,mystery,unsolved,secret,ancient engineering,weapon,sword,kingdom,invaded,raid"
+          RSS_FEEDS: "https://www.worldhistory.org/rss/,https://www.smithsonianmag.com/rss/history/,https://www.medievalists.net/feed/,https://www.thehindu.com/society/history-and-culture/feeder/default.rss,https://theconversation.com/articles.atom,https://www.sapiens.org/feed/,https://www.ancient-origins.net/feed/"
+          SUBREDDITS: IndianHistory
+          GROQ_MODEL: qwen/qwen3.8-27b
+          TIMEZONE: Asia/Kolkata
+          AUTO_APPROVE: "1"
+          ALLOW_DEGRADED: ""
+          # YouTube stage stays a rehearsal until you enable it on purpose.
+          DRY_RUN: "1"
+          IMAGES_PER_VIDEO: "12"
+          MIN_NICHE_SCORE: "0"
+          MIN_TOTAL_SCORE: "0.20"
+          # Linux has no macOS `say`; Edge-TTS neural voices took its place.
+          TTS_ENGINE: edge
+        run: python -m ytauto run --cycles 1
+
+      - name: Publish to Rumble (longform + shorts rendered this cycle)
+        env:
+          RUMBLE_EMAIL: ${{ secrets.RUMBLE_EMAIL }}
+          RUMBLE_PASSWORD: ${{ secrets.RUMBLE_PASSWORD }}
+          RUMBLE_CHANNEL: ${{ secrets.RUMBLE_CHANNEL }}
+        # Cloudflare sometimes blocks runner IPs; a failed upload must not
+        # void the state artifact, so this step is allowed to fail.
+        continue-on-error: true
+        run: python -m ytauto rumble
+
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## Cycle result $(date -u '+%F %T')Z"
+            echo '```'
+            tail -n 40 data/logs/*.log 2>/dev/null | tail -n 60 || echo "(no logs)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Persist the state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytauto-state
+          path: data/ytauto.db
+          retention-days: 90
+          if-no-files-found: warn
