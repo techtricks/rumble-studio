@@ -3,6 +3,8 @@
 ## Network / Hosting
 - [ ] **Netlify hosting (dashboard ka static snapshot)** — har hourly cycle ke end mein static site build karke Netlify pe auto-deploy (API + data embedded, max 1hr fresh). User ko ek baar Netlify login karwana hoga (netlify CLI). User ne bola "baad me karenge" (2026-10-18).
 - [ ] (Isi se juda) Live-tunnel option — Mac ka port expose karna padta, risky; na chahiye to skip.
+- [ ] CI go-live ho jaye (dry-run pass) → **Mac pe launchd hourly cycle unload karna** (duplicate guard) — command FULL_AUTO.md me hai. Do rounds saath chale to same topic dui baar ban/publish ho sakta hai.
+- [ ] CI pe dashboard ka data sync — abhi dashboard sirf Mac-local DB dekhta hai; run ka artifact (`ytauto-state`) private hai. Option: run end me snapshot commit ek ghia repo me. Jab user puchhe tab.
 
 ## Ideas (user ne kabhi bola ho to)
 - [ ] Rumble category auto-select (Education/News) — custom dropdown widget, abhi skip ho raha hai warning ke saath.

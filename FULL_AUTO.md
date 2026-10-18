@@ -49,6 +49,18 @@ sudo pmset -a displaysleep 10      # screen sleep theek hai
 - `ytauto render --force` — render retry
 - `ytauto rumble` — Rumble upload manual push (cookies already saved hain)
 
+## GitHub Actions se roz 1 video (Mac band ho to bhi chalta hai!)
+- Setup guide: `deploy/GITHUB_ACTIONS.md`
+- Repo: https://github.com/techtricks/rumble-studio (public; secrets me keys — code me nahi)
+- Roz **20:00 IST** pe: research → script → Edge-TTS render → Rumble publish (longform + short)
+- Live run dekho: repo → Actions tab → latest run
+- Manual run karo: Actions → ytauto-cycle → Run workflow (dry_run option bhi hai)
+- **Mac pe launchd + CI dono ON = DUPLICATE videos!** CI go-live ke baad launchd bandido:
+  ```bash
+  launchctl unload ~/Library/LaunchAgents/com.ytauto.rumble.plist
+  ```
+- CI Cloudflare pe atke to: Mac pe `python -m ytauto rumble` chalake manual push kar do
+
 ## Safety rails jo ON hain
 - AUTO_APPROVE=1 lekin: research-confidence, niche (Indian history), duplicate & originality gates ke bina script auto-publish NAHI hota
 - 6cc/CC-license images only, rotating voices — monetisation-safe defaults
