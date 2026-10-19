@@ -39,7 +39,7 @@ Base voices Edge-TTS neural hain (Mac ke nahi), publish source Rumble hai.
    dabake `dry_run = true` check karke chla do. पूरा cycle dry-run mode mein
    chalega (kuch publish nahi hoga) aur batayega kya galat hai.
 
-5. **Live:** dry_run ke bagair chladne par roj 20:00 IST pe chal jaayega:
+5. **Live:** dry_run ke bagair chladne par roj 2:30 AM IST (UTC 21:00 — US prime-time se pehle) pe chal jaayega:
    longform + uska short dono Rumble pe. State beech me `ytauto-state` artifact
    me travel karta hai (topic-pool, published status, used-marker sab safe).
 
