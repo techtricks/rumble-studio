@@ -7,9 +7,10 @@ name: ytauto-cycle
 
 on:
   schedule:
-    # 20:00 IST daily. A steady once-a-day cadence suits the free tier and
-    # the new-channel upload pace far better than an hourly cram.
-    - cron: "0 20 * * *"
+    # UTC 21:00 = 2:30 AM IST = 2-4 PM Eastern (US). Posting into the quiet
+    # hours before the US evening ramp-up (67% of Rumble traffic is US,
+    # prime time 7–10 PM ET) keeps the video fresh in "Latest" all prime.
+    - cron: "0 21 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
