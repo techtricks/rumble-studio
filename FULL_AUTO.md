@@ -52,7 +52,7 @@ sudo pmset -a displaysleep 10      # screen sleep theek hai
 ## GitHub Actions se roz 1 video (Mac band ho to bhi chalta hai!)
 - Setup guide: `deploy/GITHUB_ACTIONS.md`
 - Repo: https://github.com/techtricks/rumble-studio (public; secrets me keys — code me nahi)
-- Roz **20:00 IST** pe: research → script → Edge-TTS render → Rumble publish (longform + short)
+- Roz **2:30 AM IST** pe (US shaam peak se pehle): research → script → Edge-TTS render → Rumble publish (longform + short)
 - Live run dekho: repo → Actions tab → latest run
 - Manual run karo: Actions → ytauto-cycle → Run workflow (dry_run option bhi hai)
 - **Mac pe launchd + CI dono ON = DUPLICATE videos!** CI go-live ke baad launchd bandido:
