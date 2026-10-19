@@ -86,13 +86,19 @@ def _sync_db(art: dict) -> bool:
         try:
             with zipfile.ZipFile(zpath) as zf:
                 db_tmp = Path(td) / "incoming.db"
-                target = next(
-                    (n for n in zf.namelist()
-                     if Path(n).name == "ytauto.db"), None)
-                if not target:
+                targets = {n for n in zf.namelist()
+                           if Path(n).name in ("ytauto.db", "rumble_stats.json")}
+                db_target = next((n for n in targets
+                                  if Path(n).name == "ytauto.db"), None)
+                if not db_target:
                     print("[ci-sync] artifact had no ytauto.db", flush=True)
                     return False
-                db_tmp.write_bytes(zf.read(target))
+                db_tmp.write_bytes(zf.read(db_target))
+                for n in targets:
+                    if Path(n).name == "rumble_stats.json":
+                        stats_tmp = Path(td) / "rumble_stats.json"
+                        stats_tmp.write_bytes(zf.read(n))
+                        stats_tmp.replace(CI_DIR / "rumble_stats.json")
             os.replace(db_tmp, DB_OUT)  # atomic: dashboard never sees a half DB
         except (zipfile.BadZipFile, KeyError, OSError) as exc:
             print(f"[ci-sync] bad artifact: {exc}", flush=True)

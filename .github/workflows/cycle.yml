@@ -147,6 +147,12 @@ jobs:
         continue-on-error: true
         run: python -m ytauto rumble
 
+      - name: Channel stats (views + monetization + earnings)
+        if: always()
+        # A failed scrape must not void the state artifact — best effort.
+        run: |-
+          python tools/rumble_stats.py || echo "stats scrape failed (non-fatal)"
+
       - name: Report
         if: always()
         run: |
@@ -162,6 +168,8 @@ jobs:
         uses: actions/upload-artifact@v4
         with:
           name: ytauto-state
-          path: data/ytauto.db
+          path: |
+            data/ytauto.db
+            data/rumble_stats.json
           retention-days: 90
           if-no-files-found: warn

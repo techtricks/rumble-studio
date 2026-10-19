@@ -123,6 +123,45 @@ def api_status() -> dict:
     attempts = db_rows("select count(*) c from videos") or [{"c": 0}]
     total_ever = attempts[0]["c"] if attempts else 0
     success = round(100 * published / total_ever) if total_ever else 0
+
+    # GitHub Actions connectivity: runs.json is rewritten every sync pass
+    # (~3 min); older than 15 min means the pull is broken → offline.
+    gh_runs = ci.get("runs") or []
+    latest = gh_runs[0] if gh_runs else None
+    online = False
+    if ci.get("synced_at"):
+        try:
+            age = time.time() - time.mktime(
+                time.strptime(ci["synced_at"], "%Y-%m-%d %H:%M:%S"))
+            online = 0 <= age < 900
+        except ValueError:
+            pass
+    github = {
+        "online": online,
+        "repo": "https://github.com/techtricks/rumble-studio/actions",
+        "run_url": (latest or {}).get("url"),
+        "run_number": (latest or {}).get("number"),
+        "run_status": (latest or {}).get("status"),
+        "run_conclusion": (latest or {}).get("conclusion"),
+    }
+
+    # Channel money+reach snapshot written by tools/rumble_stats.py (CI adds
+    # the file to the state artifact; locally the checker writes data/).
+    rumble_stats = None
+    for cand in (CI_DB.parent / "rumble_stats.json",
+                 ROOT / "data" / "rumble_stats.json"):
+        if cand.exists():
+            try:
+                rumble_stats = json.loads(cand.read_text())
+            except (json.JSONDecodeError, OSError):
+                rumble_stats = None
+            if rumble_stats:
+                vids = rumble_stats.get("videos") or []
+                rumble_stats["monetized"] = sum(
+                    1 for v in vids if v.get("monetization") == "monetized")
+                rumble_stats["pending"] = sum(
+                    1 for v in vids if v.get("monetization") == "pending")
+            break
     return {
         "now": time.strftime("%Y-%m-%d %H:%M:%S"),
         "live": running,
@@ -130,6 +169,8 @@ def api_status() -> dict:
         "cycle_state": "RUNNING NOW" if running["running"] else ("idle" if heartbeat else "never run"),
         "source": "cloud" if online else "mac",
         "ci_synced_at": ci.get("synced_at"),
+        "github": github,
+        "rumble_stats": rumble_stats,
         "video_counts": counts,
         "topic_counts": topic_counts,
         "videos_alive": alive,
@@ -482,7 +523,12 @@ function renderCards(s){
   const vals = {published:c.published||0, active:(c.approved||0)+(c.rendered||0),
     scripted:c.scripted||0, failed:c.failed||0, alive:s.videos_alive, archived:c.archived||0,
     tnew:tc.new||0, trej:tc.rejected||0};
-  document.getElementById('cards').innerHTML = CARDS.map(k=>
+  const gh = s.github || {online:false};
+  const ghSub = gh.run_status ? ('#' + gh.run_number + ' ' + (gh.run_conclusion || gh.run_status)) : 'no runs yet';
+  const ghCard = `<div class="card ${gh.online?'c-green':'c-red'}" onclick="location.href='${gh.run_url||gh.repo}'" style="cursor:pointer" title="GitHub Actions — click to open">
+      <div class="ic">☁</div><div class="n">${gh.online?'ONLINE':'OFFLINE'}</div>
+      <div class="l">GitHub Actions · ${ghSub}</div></div>`;
+  document.getElementById('cards').innerHTML = ghCard + CARDS.map(k=>
     `<div class="card ${k.c}" onclick="location.hash='${k.go}'">
        <div class="ic">${k.ic}</div><div class="n">${vals[k.n]}</div><div class="l">${k.l}</div>
      </div>`).join('');
@@ -490,6 +536,14 @@ function renderCards(s){
 function renderPanels(s){
   const c=s.video_counts, tc=s.topic_counts;
   const started=s.heartbeat?.last_start||'—', ended=s.heartbeat?.last_end;
+  const st=s.rumble_stats;
+  const stPanel = st ? `
+  <div class="panel"><h3>💰 Rumble earnings <span class="chip ${st.monetized&&!st.pending?'ok':'ip'}">${st.monetized}✅/${st.pending}⏳</span></h3>
+    <div class="bar-row"><span>All-time</span><small>${st.all_time.earnings} · ${st.all_time.views} views</small></div>
+    <div class="bar-row"><span>Last 30 days</span><small>${st.last30.earnings} · ${st.last30.views} views · ${st.last30.hours}h watched</small></div>
+    <div class="bar-row"><span>Balance (payout $50 pe)</span><small>${st.balance}</small></div>
+    <div class="bar-row"><span>Followers</span><small>${st.all_time.followers}</small></div>
+    <p class="note">Har video pe earnings: ${(st.earnings_rows||[]).slice(0,3).map(r=>esc(r.title.slice(0,38))+' — '+r.views+' views').join(' · ')} …<br>Stats checked: ${st.checked_at} (CI har cycle ke baad refresh karti hai). Pending wale videos kuch ghanton mein review hokar Monetized ban jate hain — earning 0 isliye hai kyunki views abhi kam hain, ye normal hai 📈</p></div>` : '';
   const success=s.success_rate||0;
   document.getElementById('panels').innerHTML = `
   <div class="panel"><h3>⏱ Hourly scheduler <span class="chip ${ended?'ok':'ip'}">${ended?'idle':'in progress'}</span></h3>
@@ -509,7 +563,7 @@ function renderPanels(s){
     <div class="track"><div class="fill" style="width:100%"></div></div>
     <div class="bar-row"><span>Cookies session</span><small>${s.rumble_cookies_since||'none'}</small></div>
     <div class="bar-row"><span>Content dashboard</span><small><a href="${s.links.content}" target="_blank">rumble.com/account ↗</a></small></div>
-    <p class="note">Published videos turant channel pe dikhte hain — upload fully automated.</p></div>`;
+    <p class="note">Published videos turant channel pe dikhte hain — upload fully automated.</p></div>` + stPanel;
   document.getElementById('runs-mini').innerHTML = runRows(s.runs.slice(0,6));
 }
 const runRows = runs => runs.map(r=>`
