@@ -84,11 +84,11 @@ jobs:
           from ytauto.db import get_db
           db = get_db()
           rows = db.conn.execute(
-              "select id, error from videos where status='failed'"
+              "select id, last_error from videos where status='failed'"
           ).fetchall()
           repaired = 0
           for r in rows:
-              if "ffmpeg not found" in (r["error"] or ""):
+              if "ffmpeg not found" in (r["last_error"] or ""):
                   db.set_status(r["id"], "approved")
                   db.release(r["id"], owner="youtube/repair")
                   repaired += 1
