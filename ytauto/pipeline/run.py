@@ -18,6 +18,7 @@ one stopped.
 
 from __future__ import annotations
 
+import os
 from dataclasses import dataclass, field
 from typing import Any, Dict, List, Optional
 
@@ -98,6 +99,11 @@ def daily(
     sync: bool = True,
 ) -> RunReport:
     """Run the full loop once. Never raises; collects problems into the report."""
+    # CI runs this under a ~2h hosted-runner budget, so per-cycle sizes can be
+    # tuned from the environment without code changes.
+    script_count = int(os.getenv("SCRIPTS_PER_CYCLE", str(script_count)))
+    render_count = int(os.getenv("RENDERS_PER_CYCLE", str(render_count)))
+    upload_count = int(os.getenv("UPLOADS_PER_CYCLE", str(upload_count)))
     s = settings or get_settings()
     db = db or get_db()
     run_id = db.start_run(job)
