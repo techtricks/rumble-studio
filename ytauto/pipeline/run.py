@@ -20,10 +20,11 @@ from __future__ import annotations
 
 import os
 from dataclasses import dataclass, field
+from datetime import datetime, timedelta, timezone
 from typing import Any, Dict, List, Optional
 
 from ..config import Settings, get_settings
-from ..db import Database, get_db
+from ..db import Database, get_db, iso, utcnow
 from ..logging_setup import get_logger
 from ..util import clip
 from . import discover as discover_stage
@@ -99,13 +100,29 @@ def daily(
     sync: bool = True,
 ) -> RunReport:
     """Run the full loop once. Never raises; collects problems into the report."""
-    # CI runs this under a ~2h hosted-runner budget, so per-cycle sizes can be
-    # tuned from the environment without code changes.
     script_count = int(os.getenv("SCRIPTS_PER_CYCLE", str(script_count)))
     render_count = int(os.getenv("RENDERS_PER_CYCLE", str(render_count)))
     upload_count = int(os.getenv("UPLOADS_PER_CYCLE", str(upload_count)))
     s = settings or get_settings()
     db = db or get_db()
+
+    # Catch-up guard: a backup schedule may fire on the same day as the main
+    # one. If a cycle already finished cleanly within CATCHUP_HOURS, this
+    # invocation is a no-op instead of producing a duplicate video.
+    catchup_h = float(os.getenv("CATCHUP_HOURS", "0"))
+    if catchup_h > 0:
+        since = iso(utcnow() - timedelta(hours=catchup_h))
+        row = db.conn.execute(
+            "select id from runs where ended_at>=? and status='ok' "
+            "order by ended_at desc limit 1", (since,)).fetchone()
+        if row:
+            log.info("catch-up guard: last clean cycle %s is recent "
+                     "(CATCHUP_HOURS=%g) — skipping this invocation",
+                     row[0], catchup_h)
+            rep = RunReport(job=job, run_id=row[0])
+            rep.skipped.append(f"guard: clean cycle {row[0]} within "
+                               f"{catchup_h:g}h — nothing to do")
+            return rep
     run_id = db.start_run(job)
     report = RunReport(job=job, run_id=run_id)
     log.info("=== %s run %s starting ===", job, run_id)

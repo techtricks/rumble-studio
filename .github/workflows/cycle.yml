@@ -11,6 +11,11 @@ on:
     # hours before the US evening ramp-up (67% of Rumble traffic is US,
     # prime time 7–10 PM ET) keeps the video fresh in "Latest" all prime.
     - cron: "0 21 * * *"
+    # Backup slot ~6.5h later (9:00 AM IST). The CATCHUP_HOURS guard makes
+    # this a no-op when the main run already finished cleanly, so a green
+    # day never doubles up — but a failed/blocked morning run gets retried
+    # the same day without any manual clicking.
+    - cron: "30 3 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -139,6 +144,9 @@ jobs:
           MIN_TOTAL_SCORE: "0.20"
           # Linux has no macOS `say`; Edge-TTS neural voices took its place.
           TTS_ENGINE: edge
+          # Backup-schedule failover: a backup cron never double-posts — it
+          # only works when the main run missed/failed (no clean cycle in 14h).
+          CATCHUP_HOURS: "14"
         run: python -m ytauto run --cycles 1
 
       - name: Publish to Rumble (longform + shorts rendered this cycle)
