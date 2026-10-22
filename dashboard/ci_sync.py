@@ -121,6 +121,7 @@ def _sync_runs() -> None:
         "status": r.get("status"),
         "conclusion": r.get("conclusion"),
         "created_at": r.get("created_at"),
+        "started_at": r.get("run_started_at"),
         "updated_at": r.get("updated_at"),
         "url": r.get("html_url"),
     } for r in (data.get("workflow_runs") or [])]

@@ -127,7 +127,9 @@ def api_status() -> dict:
     # GitHub Actions connectivity: runs.json is rewritten every sync pass
     # (~3 min); older than 15 min means the pull is broken → offline.
     gh_runs = ci.get("runs") or []
-    latest = gh_runs[0] if gh_runs else None
+    live = [r for r in gh_runs
+            if r.get("status") in ("in_progress", "queued")]
+    show_run = (live[0] if live else (gh_runs[0] if gh_runs else None))
     online = False
     if ci.get("synced_at"):
         try:
@@ -139,10 +141,13 @@ def api_status() -> dict:
     github = {
         "online": online,
         "repo": "https://github.com/techtricks/rumble-studio/actions",
-        "run_url": (latest or {}).get("url"),
-        "run_number": (latest or {}).get("number"),
-        "run_status": (latest or {}).get("status"),
-        "run_conclusion": (latest or {}).get("conclusion"),
+        "run_url": (show_run or {}).get("url"),
+        "run_number": (show_run or {}).get("number"),
+        "run_status": (show_run or {}).get("status"),
+        "run_conclusion": (show_run or {}).get("conclusion"),
+        "run_started_at": (show_run or {}).get("started_at"),
+        "run_updated_at": (show_run or {}).get("updated_at"),
+        "run_event": (show_run or {}).get("event"),
     }
 
     # Channel money+reach snapshot written by tools/rumble_stats.py (CI adds
@@ -524,7 +529,12 @@ function renderCards(s){
     scripted:c.scripted||0, failed:c.failed||0, alive:s.videos_alive, archived:c.archived||0,
     tnew:tc.new||0, trej:tc.rejected||0};
   const gh = s.github || {online:false};
-  const ghSub = gh.run_status ? ('#' + gh.run_number + ' ' + (gh.run_conclusion || gh.run_status)) : 'no runs yet';
+  const ghStatusWord = {queued:'⏳ queued', in_progress:'🏃 running',
+    completed:(gh.run_conclusion==='success'?'✅ success':
+               gh.run_conclusion==='failure'?'❌ failed':
+               gh.run_conclusion==='cancelled'?'🛑 cancelled':
+               (gh.run_conclusion||'done'))}[gh.run_status] || gh.run_status || 'no runs yet';
+  const ghSub = gh.run_number ? ('#' + gh.run_number + ' ' + ghStatusWord) : 'no runs yet';
   const ghCard = `<div class="card ${gh.online?'c-green':'c-red'}" onclick="location.href='${gh.run_url||gh.repo}'" style="cursor:pointer" title="GitHub Actions — click to open">
       <div class="ic">☁</div><div class="n">${gh.online?'ONLINE':'OFFLINE'}</div>
       <div class="l">GitHub Actions · ${ghSub}</div></div>`;
@@ -545,13 +555,22 @@ function renderPanels(s){
     <div class="bar-row"><span>Followers</span><small>${st.all_time.followers}</small></div>
     <p class="note">Har video pe earnings: ${(st.earnings_rows||[]).slice(0,3).map(r=>esc(r.title.slice(0,38))+' — '+r.views+' views').join(' · ')} …<br>Stats checked: ${st.checked_at} (CI har cycle ke baad refresh karti hai). Pending wale videos kuch ghanton mein review hokar Monetized ban jate hain — earning 0 isliye hai kyunki views abhi kam hain, ye normal hai 📈</p></div>` : '';
   const success=s.success_rate||0;
+  const gh2 = s.github || {};
+  const ghRun = gh2.run_status ? ('#' + gh2.run_number + ' ' + ({
+      queued:'⏳ queued (cloud soon)', in_progress:'🏃 running in cloud',
+      completed: gh2.run_conclusion==='success' ? '✅ finished — videos published'
+               : gh2.run_conclusion==='failure' ? '❌ failed — see logs'
+               : gh2.run_conclusion==='cancelled' ? '🛑 cancelled' :
+                 (gh2.run_conclusion||'done')
+    })[gh2.run_status] || gh2.run_status) : 'no cycle yet';
+  const ghLive = (gh2.run_status==='in_progress' || gh2.run_status==='queued');
   document.getElementById('panels').innerHTML = `
-  <div class="panel"><h3>⏱ Hourly scheduler <span class="chip ${ended?'ok':'ip'}">${ended?'idle':'in progress'}</span></h3>
-    <div class="bar-row"><span>Cycle cadence</span><small>every 60 min</small></div>
-    <div class="track"><div class="fill" style="width:100%"></div></div>
-    <div class="bar-row"><span>Last start</span><small>${started}</small></div>
-    <div class="track"><div class="fill" style="width:${ended?100:55}%"></div></div>
-    <p class="note">launchd har ghanta discover → script → auto-approve → render → Rumble chalata hai. Status: <b>${esc(s.cycle_state)}</b></p></div>
+  <div class="panel"><h3>☁ GitHub cycle <span class="chip ${ghLive?'ip':'ok'}">${ghLive?'live':'idle'}</span></h3>
+    <div class="bar-row"><span>Current run</span><small>${gh2.run_url ? `<a href="${gh2.run_url}" target="_blank">${ghRun} ↗</a>` : ghRun}</small></div>
+    <div class="bar-row"><span>Started</span><small>${gh2.run_started_at ? (gh2.run_started_at+' '+(gh2.run_event||'')) : (s.heartbeat?.last_start||'—')}</small></div>
+    <div class="track"><div class="fill" style="width:${ghLive?55:100}%"></div></div>
+    <div class="bar-row"><span>Cloud updated</span><small>${gh2.run_updated_at||s.heartbeat?.last_end||'—'}</small></div>
+    <p class="note">Scripts → approve → Edge-TTS render → <b>Rumble upload</b> (+ short). Scheduled: roz 2:30 AM IST (+ 9:00 AM IST backup-sirf-fail-par). Status: <b>${esc(s.cycle_state)}</b></p></div>
   <div class="panel"><h3>📈 Pipeline success <span class="chip ${success>60?'ok':success>25?'ip':'bad'}">${success}%</span></h3>
     <div class="bar-row"><span>Published / ever created</span><small>${c.published||0} / ${Object.values(c).reduce((a,b)=>a+b,0)}</small></div>
     <div class="track"><div class="fill" style="width:${success}%"></div></div>
