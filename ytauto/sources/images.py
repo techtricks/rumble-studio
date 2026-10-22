@@ -256,7 +256,7 @@ def article_images(url: str, *, limit: int = 4, timeout: int = 20) -> List[_Cand
 # --------------------------------------------------------------------------
 # 2. Wikimedia Commons, for entities
 # --------------------------------------------------------------------------
-def commons_images(query: str, *, limit: int = 4, timeout: int = 20) -> List[_Candidate]:
+def commons_images(query: str, *, limit: int = 4, timeout: int = 14) -> List[_Candidate]:
     if not query.strip():
         return []
     params = (
@@ -266,7 +266,7 @@ def commons_images(query: str, *, limit: int = 4, timeout: int = 20) -> List[_Ca
         "&prop=imageinfo&iiprop=url|size|extmetadata&iiurlwidth=1280&format=json"
     )
     try:
-        data = fetch(_COMMONS_API + params, timeout=timeout, attempts=2, as_json=True)
+        data = fetch(_COMMONS_API + params, timeout=timeout, attempts=1, as_json=True)
     except Exception as exc:  # noqa: BLE001
         log.debug("commons lookup failed for %r: %s", query, exc)
         return []
@@ -304,7 +304,7 @@ def commons_images(query: str, *, limit: int = 4, timeout: int = 20) -> List[_Ca
 # --------------------------------------------------------------------------
 # 3. Openverse, for the wider subject
 # --------------------------------------------------------------------------
-def openverse_images(query: str, *, limit: int = 4, timeout: int = 25) -> List[_Candidate]:
+def openverse_images(query: str, *, limit: int = 4, timeout: int = 12) -> List[_Candidate]:
     if not query.strip():
         return []
     params = (
@@ -314,7 +314,7 @@ def openverse_images(query: str, *, limit: int = 4, timeout: int = 25) -> List[_
         "&license_type=commercial,modification&mature=false"
     )
     try:
-        data = fetch(_OPENVERSE_API + params, timeout=timeout, attempts=2, as_json=True)
+        data = fetch(_OPENVERSE_API + params, timeout=timeout, attempts=1, as_json=True)
     except Exception as exc:  # noqa: BLE001
         log.debug("openverse lookup failed for %r: %s", query, exc)
         return []
