@@ -10,12 +10,12 @@ on:
     # UTC 21:00 = 2:30 AM IST = 2-4 PM Eastern (US). Posting into the quiet
     # hours before the US evening ramp-up (67% of Rumble traffic is US,
     # prime time 7–10 PM ET) keeps the video fresh in "Latest" all prime.
-    - cron: "0 21 * * *"
+    - cron: "7 21 * * *"
     # Backup slot ~6.5h later (9:00 AM IST). The CATCHUP_HOURS guard makes
     # this a no-op when the main run already finished cleanly, so a green
     # day never doubles up — but a failed/blocked morning run gets retried
     # the same day without any manual clicking.
-    - cron: "30 3 * * *"
+    - cron: "37 3 * * *"
   workflow_dispatch:
     inputs:
       dry_run:
@@ -178,6 +178,20 @@ jobs:
             tail -n 40 data/logs/*.log 2>/dev/null | tail -n 60 || echo "(no logs)"
             echo '```'
           } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Merge SQLite WAL into the state DB
+        if: always()
+        # A cancelled/failed cycle dies mid-write and leaves its committed
+        # transactions inside data/ytauto.db-wal. Without this merge the
+        # artifact stores the stale main file and every next run replays the
+        # same work from scratch (the exact repeat-loop we saw on Oct 19-22).
+        run: python - <<'PY'
+          import sqlite3
+          c = sqlite3.connect('data/ytauto.db')
+          c.execute('PRAGMA wal_checkpoint(TRUNCATE)')
+          c.close()
+          print('WAL merged — the state DB is current')
+          PY
 
       - name: Persist the state
         if: always()
