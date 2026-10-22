@@ -24,6 +24,7 @@ from __future__ import annotations
 
 import json
 import re
+import os
 import time
 from typing import Any, Dict, List, Optional, Tuple
 
@@ -184,12 +185,19 @@ class OpenAICompatBackend:
         Sleeps for the oldest remaining entry when there is no room, rather
         than to the end of the window, so a run keeps its rhythm.
         """
+    def _await_token_headroom(self, payload: Optional[Dict[str, Any]]) -> None:
+        """Sleep until this call is unlikely to trip the output-token meter.
+
+        Sleeps for the oldest remaining entry when there is no room, rather
+        than to the end of the window, so a run keeps its rhythm.
+        """
         if self.throttle_s <= 0:
             return
         window, used = self._token_window()
+        limit = self.output_token_limit
         asked = int((payload or {}).get("max_tokens") or self.s.llm_max_tokens)
         expected = min(asked, self._last_output_tokens or self.ASSUMED_OUTPUT_TOKENS)
-        if used + expected <= self.OUTPUT_TOKEN_LIMIT:
+        if used + expected <= limit:
             return
         if not window:
             return
@@ -197,7 +205,7 @@ class OpenAICompatBackend:
         if wait > 0:
             log.info(
                 "%s output-token budget spent (%d/%d), waiting %.0fs",
-                self.provider, used, self.OUTPUT_TOKEN_LIMIT, wait,
+                self.provider, used, limit, wait,
             )
             time.sleep(wait)
 
@@ -222,6 +230,10 @@ class OpenAICompatBackend:
         self.s = settings
         self.fallback = fallback
         self.throttle_s = _MIN_INTERVAL_S if throttle_s is None else throttle_s
+        # Per-minute output-token ceiling. 1000 is the conservative free-tier
+        # default (small preview models); bigger models measured far higher
+        # (gpt-oss-120b tolerated ~6.5k burst), so CI passes LLM_OTPM to lift it.
+        self.output_token_limit = int(os.getenv("LLM_OTPM", str(self.OUTPUT_TOKEN_LIMIT)))
         self._last_call = 0.0
         # Rolling output-token usage, for the per-minute meter.
         self._token_use: List[Tuple[float, int]] = []

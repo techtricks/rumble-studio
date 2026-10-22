@@ -134,6 +134,10 @@ jobs:
           # and whole cycles blew past the runner budget.
           GROQ_MODEL: openai/gpt-oss-120b
           SCRIPTS_PER_CYCLE: "1"
+          # gpt-oss-120b measured ~6.5k output tokens/min without a 429 —
+          # the default 1000 pacing was throttling us 6x artificially.
+          LLM_OTPM: "6000"
+          RENDERS_PER_CYCLE: "2"
           TIMEZONE: Asia/Kolkata
           AUTO_APPROVE: "1"
           ALLOW_DEGRADED: ""
