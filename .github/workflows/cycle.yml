@@ -45,9 +45,11 @@ jobs:
 
       - name: Fonts + system deps
         # ffmpeg is NOT on the runner image any more (2026): the render stage
-        # hard-requires it. Fonts matter too: captions draw with a real
-        # typeface, and the runner image ships few.
-        run: sudo apt-get update -y && sudo apt-get install -y --no-install-recommends ffmpeg fonts-noto-core fonts-noto-cjk
+        # hard-requires it. Use retries — the Ubuntu archive throttles badly
+        # some evenings (two consecutive runs straggled here for a while).
+        # fonts-noto-core covers Latin + Devanagari + Bengali captions; the
+        # CJK pack is 200MB of apt minutes no caption in this channel needs.
+        run: sudo apt-get update -y -o Acquire::Retries=3 && sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 ffmpeg fonts-noto-core
 
       - name: Python deps
         run: |
