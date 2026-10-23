@@ -103,6 +103,13 @@ jobs:
                   db.release(r["id"], owner="youtube/repair")
                   repaired += 1
                   continue
+              # Render-timeout rows were usually victims of parallel renders
+              # thrashing the 2-core runner; renders are sequential now and
+              # capped by RENDER_TIMEOUT_S, so they get another chance.
+              if "ffmpeg timed out" in (r["last_error"] or ""):
+                  db.set_status(r["id"], "approved")
+                  db.release(r["id"], owner="youtube/repair")
+                  repaired += 1
               if "ffmpeg not found" in (r["last_error"] or ""):
                   db.set_status(r["id"], "approved")
                   db.release(r["id"], owner="youtube/repair")

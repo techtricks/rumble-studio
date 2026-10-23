@@ -127,6 +127,29 @@ def daily(
     report = RunReport(job=job, run_id=run_id)
     log.info("=== %s run %s starting ===", job, run_id)
 
+    # 0. stale-media sweep: a previous cycle can have rows whose media never
+    # made it out (mid-run kill, artifact that carries only the database).
+    # A rendered-but-missing longform re-enters the render queue; a ghost
+    # short row would block build_missing from ever creating the real short,
+    # so it is deleted outright.
+    try:
+        stale = db.conn.execute(
+            "select id, kind, video_path from videos "
+            "where status in ('rendered','scheduled') and video_path is not null"
+        ).fetchall()
+        for r in stale:
+            if r["video_path"] and not __import__("pathlib").Path(r["video_path"]).exists():
+                if r["kind"] == "shorts":
+                    db.conn.execute("delete from videos where id=?", (r["id"],))
+                    log.info("swept ghost short %s (media missing)", r["id"])
+                else:
+                    db.set_status(r["id"], "approved")
+                    db.release(r["id"], owner="stale-media-sweep")
+                    log.info("requeued %s: media missing", r["id"])
+        db.conn.commit()
+    except Exception as exc:  # noqa: BLE001
+        log.warning("stale-media sweep skipped: %s", exc)
+
     try:
         # 1. what went live
         if sync:
