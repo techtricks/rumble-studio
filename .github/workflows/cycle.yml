@@ -137,6 +137,11 @@ jobs:
           # gpt-oss-120b measured ~6.5k output tokens/min without a 429 —
           # the default 1000 pacing was throttling us 6x artificially.
           LLM_OTPM: "6000"
+          # The inline upload stage targets YouTube and has no CI
+          # credentials — the Rumble step below is our actual publisher.
+          # Without this the stage's missing-credentials errors fail the
+          # cycle, and a failed cycle would skip the Rumble publish.
+          UPLOADS_PER_CYCLE: "0"
           TIMEZONE: Asia/Kolkata
           AUTO_APPROVE: "1"
           ALLOW_DEGRADED: ""
@@ -159,6 +164,10 @@ jobs:
         run: python -m ytauto run --cycles 1
 
       - name: Publish to Rumble (longform + shorts rendered this cycle)
+        if: always()
+        # The cycle step exits 1 on honest per-item errors (a timed-out
+        # render, a thin topic); those videos that did finish must still go
+        # live. The uploader refuses gracefully when its media is missing.
         env:
           RUMBLE_EMAIL: ${{ secrets.RUMBLE_EMAIL }}
           RUMBLE_PASSWORD: ${{ secrets.RUMBLE_PASSWORD }}
@@ -191,11 +200,13 @@ jobs:
         # artifact stores the stale main file and every next run replays the
         # same work from scratch (the exact repeat-loop we saw on Oct 19-22).
         run: |
+          python - <<'PY'
           import sqlite3
           c = sqlite3.connect('data/ytauto.db')
           c.execute('PRAGMA wal_checkpoint(TRUNCATE)')
           c.close()
           print('WAL merged — the state DB is current')
+          PY
           PY
 
       - name: Persist the state
