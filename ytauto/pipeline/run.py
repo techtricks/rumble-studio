@@ -115,14 +115,22 @@ def daily(
         row = db.conn.execute(
             "select id from runs where ended_at>=? and status='ok' "
             "order by ended_at desc limit 1", (since,)).fetchone()
-        if row:
-            log.info("catch-up guard: last clean cycle %s is recent "
-                     "(CATCHUP_HOURS=%g) — skipping this invocation",
-                     row[0], catchup_h)
+        shipped = db.conn.execute(
+            "select id from videos where published_at>=? limit 1", (since,)
+        ).fetchone() if row else None
+        if row and shipped:
+            log.info("catch-up guard: clean cycle %s shipped %s within "
+                     "%gh — skipping this invocation",
+                     row[0], shipped[0], catchup_h)
             rep = RunReport(job=job, run_id=row[0])
-            rep.skipped.append(f"guard: clean cycle {row[0]} within "
-                               f"{catchup_h:g}h — nothing to do")
+            rep.skipped.append(f"guard: cycle {row[0]} shipped {shipped[0]} "
+                               f"within {catchup_h:g}h — nothing to do")
             return rep
+        if row:
+            # A green run that shipped nothing (a rehearsal, a thin topic,
+            # pending shorts) must not block the retry that finishes the work.
+            log.info("catch-up guard: recent clean cycle %s shipped nothing — "
+                     "continuing", row[0])
     run_id = db.start_run(job)
     report = RunReport(job=job, run_id=run_id)
     log.info("=== %s run %s starting ===", job, run_id)

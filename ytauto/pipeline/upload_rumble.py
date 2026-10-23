@@ -23,7 +23,7 @@ from pathlib import Path
 from typing import Optional
 
 from ..config import get_settings
-from ..db import Database, get_db
+from ..db import Database, get_db, iso
 from ..logging_setup import get_logger
 
 log = get_logger("pipeline.upload_rumble")
@@ -297,7 +297,12 @@ class RumbleUploader:
                         )
                     else:
                         log.info("final submit done — video is going live")
-                        self.db.set_status(video_id, "published", error=None)
+                        # Stamp the live moment: the catch-up guard counts
+                        # shipped-by-Rumble runs through published_at.
+                        self.db.set_status(
+                            video_id, "published", error=None,
+                            published_at=iso(),
+                        )
                 except Exception as exc:  # noqa: BLE001
                     log.warning("auto-publish failed: %s", exc)
             else:
