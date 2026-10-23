@@ -137,12 +137,17 @@ jobs:
           # gpt-oss-120b measured ~6.5k output tokens/min without a 429 —
           # the default 1000 pacing was throttling us 6x artificially.
           LLM_OTPM: "6000"
-          RENDERS_PER_CYCLE: "2"
           TIMEZONE: Asia/Kolkata
           AUTO_APPROVE: "1"
           ALLOW_DEGRADED: ""
-          # YouTube stage stays a rehearsal until you enable it on purpose.
-          DRY_RUN: "1"
+          # Publish by default: scheduled runs and dry_run=false dispatches.
+          # Only an explicit dry_run=true dispatch rehearses without posting.
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
+          # Two parallel ffmpeg renders thrash 2 shared runner cores (a 6-min
+          # video took 40+ min and the second one hit the 1h timeout); render
+          # one at a time and cap it below the cycle budget.
+          RENDERS_PER_CYCLE: "1"
+          RENDER_TIMEOUT_S: "1800"
           IMAGES_PER_VIDEO: "12"
           MIN_NICHE_SCORE: "0"
           MIN_TOTAL_SCORE: "0.20"
@@ -185,7 +190,7 @@ jobs:
         # transactions inside data/ytauto.db-wal. Without this merge the
         # artifact stores the stale main file and every next run replays the
         # same work from scratch (the exact repeat-loop we saw on Oct 19-22).
-        run: python - <<'PY'
+        run: |
           import sqlite3
           c = sqlite3.connect('data/ytauto.db')
           c.execute('PRAGMA wal_checkpoint(TRUNCATE)')

@@ -12,6 +12,7 @@ graph. A caption file per line is not worth worrying about.
 
 from __future__ import annotations
 
+import os
 import re
 import shutil
 import tempfile
@@ -393,7 +394,9 @@ def render_video(
                 "-shortest",
                 str(out_path),
         ]
-        ff.run(cmd, timeout=3600)
+        # A stuck filter chain would otherwise block the whole cycle for an
+        # hour; CI caps this with RENDER_TIMEOUT_S to fit the runner budget.
+        ff.run(cmd, timeout=int(os.getenv("RENDER_TIMEOUT_S", "3600")))
     finally:
         shutil.rmtree(tmpdir, ignore_errors=True)
 
