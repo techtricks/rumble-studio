@@ -94,6 +94,15 @@ jobs:
           ).fetchall()
           repaired = 0
           for r in rows:
+              # CI had no YouTube credentials: the uploader flipped the row to
+              # 'failed' even though the script is fine. Credentials are not
+              # the video's fault — send it back for approval so the render
+              # stage rebuilds it and the Rumble publisher below ships it.
+              if "no valid YouTube credentials" in (r["last_error"] or ""):
+                  db.set_status(r["id"], "approved")
+                  db.release(r["id"], owner="youtube/repair")
+                  repaired += 1
+                  continue
               if "ffmpeg not found" in (r["last_error"] or ""):
                   db.set_status(r["id"], "approved")
                   db.release(r["id"], owner="youtube/repair")
@@ -199,15 +208,7 @@ jobs:
         # transactions inside data/ytauto.db-wal. Without this merge the
         # artifact stores the stale main file and every next run replays the
         # same work from scratch (the exact repeat-loop we saw on Oct 19-22).
-        run: |
-          python - <<'PY'
-          import sqlite3
-          c = sqlite3.connect('data/ytauto.db')
-          c.execute('PRAGMA wal_checkpoint(TRUNCATE)')
-          c.close()
-          print('WAL merged — the state DB is current')
-          PY
-          PY
+        run: python -c "import sqlite3; c = sqlite3.connect('data/ytauto.db'); c.execute('PRAGMA wal_checkpoint(TRUNCATE)'); c.close(); print('WAL merged — the state DB is current')"
 
       - name: Persist the state
         if: always()
