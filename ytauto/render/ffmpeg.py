@@ -183,7 +183,10 @@ def run(args: Sequence[str], *, timeout: int = DEFAULT_TIMEOUT) -> subprocess.Co
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        raise FFmpegMissing(f"ffmpeg timed out after {timeout}s") from exc
+        tail = (exc.stderr or "").strip().splitlines()[-25:]
+        raise FFmpegMissing(
+            f"ffmpeg timed out after {timeout}s\n  " + "\n  ".join(tail)
+        ) from exc
     if proc.returncode != 0:
         tail = (proc.stderr or "").strip().splitlines()[-12:]
         raise FFmpegMissing(

@@ -219,7 +219,7 @@ def daily(
                 if r.ok:
                     report.rendered.append(r.video_id)
                 else:
-                    report.errors.append(f"render {r.video_id}: {clip(r.error, 100)}")
+                    report.errors.append(f"render {r.video_id}: {clip(r.error, 400)}")
         except Exception as exc:  # noqa: BLE001
             report.errors.append(f"render queue: {exc}")
 
