@@ -455,6 +455,44 @@ def collect(
     return out[:limit]
 
 
+def _normalize(data: bytes, dest_dir: Path, stem: str) -> Optional[Path]:
+    """Decode through ffmpeg into a plain baseline JPEG.
+
+    A corrupt or exotic asset (truncated JPEG, huge PNG, odd colorspace) can
+    make the zoompan filter chain stall instead of failing fast — the
+    Talikota render hung to a deterministic 30-minute timeout five runs in
+    a row before this. Re-encoding at fetch time means only ffmpeg-clean
+    pixels ever reach the renderer, and the normalized bytes are what get
+    cached, so the cost is paid once per URL.
+    """
+    try:
+        from ..render import ffmpeg as ff
+        from pathlib import Path
+    except Exception:  # noqa: BLE001 — no usable ffmpeg: keep the raw bytes
+        return None
+    import tempfile
+
+    src = Path(tempfile.mkstemp(suffix=".img", dir=dest_dir)[1])
+    try:
+        src.write_bytes(data)
+        out = dest_dir / f"{stem}.n.jpg"
+        ff.run(
+            [
+                "-i", str(src), "-frames:v", "1", "-map", "0:v:0",
+                "-q:v", "2", str(out),
+            ]
+        )
+        return out
+    except Exception:  # noqa: BLE001 — undecodable asset never ships
+        log.debug("image normalize failed %s", data[:8])
+        return None
+    finally:
+        try:
+            src.unlink()
+        except OSError:
+            pass
+
+
 def download(cand: _Candidate, dest_dir: "object", *, timeout: int = 30) -> Optional[ImageAsset]:
     """Fetch a candidate to disk, cached by URL digest, validating the bytes."""
     from pathlib import Path
@@ -464,6 +502,15 @@ def download(cand: _Candidate, dest_dir: "object", *, timeout: int = 30) -> Opti
     dest_dir = Path(dest_dir)
     dest_dir.mkdir(parents=True, exist_ok=True)
     name = digest(cand.url)[:24]
+
+    # A previously normalized twin short-circuits the whole fetch.
+    norm = dest_dir / f"{name}.n.jpg"
+    if norm.exists() and norm.stat().st_size >= _MIN_IMAGE_BYTES:
+        return ImageAsset(
+            path=norm, url=cand.url, title=cand.title, creator=cand.creator,
+            license_name=cand.license_name, source_page=cand.source_page,
+        )
+
     suffix = Path(urlparse(cand.url).path).suffix.lower()
     if suffix not in (".jpg", ".jpeg", ".png", ".webp"):
         suffix = ".jpg"
@@ -479,6 +526,15 @@ def download(cand: _Candidate, dest_dir: "object", *, timeout: int = 30) -> Opti
             return None
         if not _sniff_image(bytes(resp)):
             return None
+        # Only ffmpeg-clean pixels reach the cache/renderer; a raw write is
+        # the fallback when ffmpeg is unavailable.
+        normalized = _normalize(bytes(resp), dest_dir, name)
+        if normalized is not None and normalized.exists():
+            return ImageAsset(
+                path=normalized, url=cand.url, title=cand.title,
+                creator=cand.creator, license_name=cand.license_name,
+                source_page=cand.source_page,
+            )
         path.write_bytes(bytes(resp))
     return ImageAsset(
         path=path, url=cand.url, title=cand.title, creator=cand.creator,

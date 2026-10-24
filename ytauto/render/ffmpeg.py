@@ -183,7 +183,16 @@ def run(args: Sequence[str], *, timeout: int = DEFAULT_TIMEOUT) -> subprocess.Co
     try:
         proc = subprocess.run(cmd, capture_output=True, text=True, timeout=timeout)
     except subprocess.TimeoutExpired as exc:
-        tail = (exc.stderr or "").strip().splitlines()[-25:]
+        # TimeoutExpired hands back bytes even when text=True — decode it,
+        # or the diagnostic itself crashes with a join() TypeError and we
+        # lose the hang-point evidence (seen live on cycle run #27).
+        err = exc.stderr or ""
+        if isinstance(err, bytes):
+            err = err.decode("utf-8", "replace")
+        out = exc.stdout or ""
+        if isinstance(out, bytes):
+            out = out.decode("utf-8", "replace")
+        tail = err.strip().splitlines()[-25:]
         raise FFmpegMissing(
             f"ffmpeg timed out after {timeout}s\n  " + "\n  ".join(tail)
         ) from exc
