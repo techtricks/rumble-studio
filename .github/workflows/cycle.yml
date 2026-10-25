@@ -112,6 +112,15 @@ jobs:
                   db.set_status(r["id"], "approved")
                   db.release(r["id"], owner="youtube/repair")
                   repaired += 1
+                  continue
+              # Runs 27's diagnostic captured its own failure text (a bytes
+              # join crash) instead of the real reason — Talikota has sat in
+              # 'failed' ever since for a bug that no longer exists.
+              if "sequence item 0" in (r["last_error"] or ""):
+                  db.set_status(r["id"], "approved")
+                  db.release(r["id"], owner="youtube/repair")
+                  repaired += 1
+              # belt-and-braces: an ffmpeg-less runner's victims re-queue too
               if "ffmpeg not found" in (r["last_error"] or ""):
                   db.set_status(r["id"], "approved")
                   db.release(r["id"], owner="youtube/repair")

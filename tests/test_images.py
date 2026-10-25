@@ -211,11 +211,28 @@ def test_download_rejects_tiny_payload(monkeypatch, tmp_path):
 
 
 def test_download_writes_and_caches(monkeypatch, tmp_path):
+    # The contract is now "normalize through ffmpeg or drop": a fake payload
+    # must be a genuinely decodable JPEG, otherwise download() drops it.
+    payload = None
+    try:
+        import tempfile
+
+        from ytauto.render import ffmpeg as ff
+
+        with tempfile.TemporaryDirectory() as td:
+            src = Path(td) / "j.jpg"
+            # payload also has to clear the 25 kB minimum image size — go big
+            ff.run(["-f", "lavfi", "-i", "color=c=red:s=4096x4096:d=1",
+                    "-frames:v", "1", "-q:v", "2", str(src)])
+            payload = src.read_bytes()
+    except Exception:
+        pytest.skip("ffmpeg unavailable")
+
     calls = []
 
     def _fake(*a, **kw):
         calls.append(1)
-        return b"\xff\xd8\xff" + b"x" * 30_000
+        return payload
 
     monkeypatch.setattr(images, "fetch", _fake)
     cand = images._Candidate(url="https://x/a.jpg", creator="Someone", license_name="CC BY 4.0")
@@ -224,6 +241,13 @@ def test_download_writes_and_caches(monkeypatch, tmp_path):
     # Second call must come from disk, not the network.
     b = images.download(cand, tmp_path)
     assert b and len(calls) == 1
+    # An undecodable asset is dropped outright — it must never reach the
+    # renderer raw (that hang swallowed five cycles' renders).
+    monkeypatch.setattr(
+        images, "fetch", lambda *a, **kw: b"\xff\xd8\xff" + b"x" * 30_000)
+    broken = images.download(
+        images._Candidate(url="https://x/broken.jpg"), tmp_path)
+    assert broken is None
 
 
 def test_download_survives_fetch_error(monkeypatch, tmp_path):

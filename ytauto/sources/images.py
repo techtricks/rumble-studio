@@ -494,7 +494,14 @@ def _normalize(data: bytes, dest_dir: Path, stem: str) -> Optional[Path]:
 
 
 def download(cand: _Candidate, dest_dir: "object", *, timeout: int = 30) -> Optional[ImageAsset]:
-    """Fetch a candidate to disk, cached by URL digest, validating the bytes."""
+    """Fetch a candidate to disk, cached by URL digest, validating the bytes.
+
+    Only ffmpeg-decodable pixels leave this function. An asset that fails
+    normalization (corrupt file, or a file that crashes the jpeg/png decoder
+    — one Obama PNG cracked ffmpeg's decoder thread outright) is dropped
+    outright, never shipped raw: a raw fallback once hung the renderer in an
+    infinite "Failed to reallocate parser buffer" loop for five cycles.
+    """
     from pathlib import Path
 
     from ..util import digest
@@ -505,7 +512,7 @@ def download(cand: _Candidate, dest_dir: "object", *, timeout: int = 30) -> Opti
 
     # A previously normalized twin short-circuits the whole fetch.
     norm = dest_dir / f"{name}.n.jpg"
-    if norm.exists() and norm.stat().st_size >= _MIN_IMAGE_BYTES:
+    if norm.exists() and norm.stat().st_size > 0:
         return ImageAsset(
             path=norm, url=cand.url, title=cand.title, creator=cand.creator,
             license_name=cand.license_name, source_page=cand.source_page,
@@ -516,7 +523,9 @@ def download(cand: _Candidate, dest_dir: "object", *, timeout: int = 30) -> Opti
         suffix = ".jpg"
     path = dest_dir / f"{name}{suffix}"
 
-    if not path.exists() or path.stat().st_size < _MIN_IMAGE_BYTES:
+    if path.exists() and path.stat().st_size >= _MIN_IMAGE_BYTES:
+        data = path.read_bytes()   # older cache: still goes through ffmpeg below
+    else:
         try:
             resp = fetch(cand.url, timeout=timeout, attempts=2, as_text=False)
         except Exception as exc:  # noqa: BLE001
@@ -526,20 +535,24 @@ def download(cand: _Candidate, dest_dir: "object", *, timeout: int = 30) -> Opti
             return None
         if not _sniff_image(bytes(resp)):
             return None
-        # Only ffmpeg-clean pixels reach the cache/renderer; a raw write is
-        # the fallback when ffmpeg is unavailable.
-        normalized = _normalize(bytes(resp), dest_dir, name)
-        if normalized is not None and normalized.exists():
-            return ImageAsset(
-                path=normalized, url=cand.url, title=cand.title,
-                creator=cand.creator, license_name=cand.license_name,
-                source_page=cand.source_page,
-            )
-        path.write_bytes(bytes(resp))
-    return ImageAsset(
-        path=path, url=cand.url, title=cand.title, creator=cand.creator,
-        license_name=cand.license_name, source_page=cand.source_page,
-    )
+        data = bytes(resp)
+        path.write_bytes(data)     # cached before normalization so a
+        # network blip never re-downloads; removed below if it can't decode.
+
+    normalized = _normalize(data, dest_dir, name)
+    if normalized is not None and normalized.exists():
+        return ImageAsset(
+            path=normalized, url=cand.url, title=cand.title,
+            creator=cand.creator, license_name=cand.license_name,
+            source_page=cand.source_page,
+        )
+    # Undecodable: purge the cache entry so it never resurfaces.
+    try:
+        path.unlink(missing_ok=True)
+    except OSError:
+        pass
+    log.info("dropped undecodable image %s (%s)", name, cand.url[:80])
+    return None
 
 
 def _sniff_image(data: bytes) -> bool:
