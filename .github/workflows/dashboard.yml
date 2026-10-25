@@ -1,0 +1,84 @@
+name: ytauto-dashboard
+
+# Publishes the online dashboard (netlify_site/) after every cycle and on a
+# timer, so the dashboard is reachable from anywhere — not only from the Mac.
+# Static snapshot: export_static.py bakes index.html + all.json from the
+# synced CI database and Netlify serves it.
+#
+# Setup (one-time, free — no credit card):
+#   1. Create a free account at app.netlify.com (sign in with GitHub).
+#   2. app.netlify.com → User settings → Applications → New access token
+#      → copy the token value.
+#   3. Create any site once (or note the empty team), then:
+#        gh secret set NETLIFY_AUTH_TOKEN   # paste the token
+#        gh secret set NETLIFY_SITE_ID     # from Site settings → Site ID
+# With the secrets present every run deploys; without them the workflow
+# still builds (and uploads the site as an artifact) but skips deploy.
+
+on:
+  workflow_run:
+    workflows: [ytauto-cycle]
+    types: [completed]
+  schedule:
+    - cron: "*/30 * * * *"   # keeps the cycle badge fresh between cycles
+  workflow_dispatch:
+
+permissions:
+  contents: read
+  actions: read
+
+jobs:
+  publish:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Sync the CI state (database + runs)
+        env:
+          GH_TOKEN: ${{ secrets.GITHUB_TOKEN }}
+        run: |
+          python - <<'EOF'
+          import sys
+          sys.path.insert(0, "dashboard")
+          import ci_sync
+          ci_sync.sync_once()
+          EOF
+
+      - name: Build the static dashboard
+        run: python dashboard/export_static.py
+
+      - name: Save the site as an artifact (always)
+        uses: actions/upload-artifact@v4
+        with:
+          name: dashboard-site
+          path: netlify_site
+          retention-days: 7
+
+      - name: Are the Netlify secrets set?
+        id: tok
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        run: |
+          if [ -n "$NETLIFY_AUTH_TOKEN" ] && [ -n "$NETLIFY_SITE_ID" ]; then
+            echo "has=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "has=false" >> "$GITHUB_OUTPUT"
+            echo "Netlify secrets missing — deploy skipped (dashboard.yml header has the one-time setup)"
+          fi
+
+      - name: Deploy to Netlify
+        if: steps.tok.outputs.has == 'true'
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+        run: |
+          npx --yes netlify-cli@latest deploy \
+            --dir netlify_site --prod \
+            --auth "$NETLIFY_AUTH_TOKEN" \
+            --site "$NETLIFY_SITE_ID" \
+            --message "dashboard snapshot from Actions"
