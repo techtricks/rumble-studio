@@ -62,6 +62,19 @@ export default async (request: Request, context: any) => {
 
   const url = new URL(request.url);
 
+  // Logout works for any method, even without a valid session: kill the
+  // cookie unconditionally and land on "/", which shows the login page.
+  if (url.pathname === "/__dash_logout") {
+    return new Response(null, {
+      status: 303,
+      headers: {
+        Location: "/",
+        "Set-Cookie":
+          "dash=; Max-Age=0; Path=/; HttpOnly; Secure; SameSite=Lax",
+      },
+    });
+  }
+
   if (request.method === "POST" && url.pathname === "/__dash_login") {
     const form = await request.formData().catch(() => null);
     const pw = String(form?.get("pw") ?? "");

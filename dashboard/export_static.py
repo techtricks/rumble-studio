@@ -186,6 +186,13 @@ def main() -> None:
     # static reads: all.json instead of /api; the rebuild timer (Actions)
     # refreshes the fact, the page just keeps itself modern on the screen.
     phtml = phtml.replace("fetch('/api/all')", "fetch('./all.json')")
+    # logout: server-side cookie kill via the edge gate, with a confirm so a
+    # stray click doesn't lock the user out mid-review.
+    phtml = phtml.replace(
+        '<span class="lo-slot">{{LOGOUT}}</span>',
+        '<a class="ext lo-gap lo" href="/__dash_logout" '
+        'onclick="return confirm(&quot;Log out? Url dobara kholne pe password '
+        'maangega.&quot;)"><span class="ic">🚪</span>Logout</a>')
     phtml = phtml.replace(
         "refresh(); setInterval(refresh, 5000);",
         "refresh(); setInterval(() => location.reload(), 240000);")

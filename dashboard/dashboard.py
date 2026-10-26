@@ -301,9 +301,12 @@ PAGE = """<!doctype html>
            cursor:pointer; transition:.15s }
   .nav a .ic { font-size:16px; width:22px; text-align:center }
   .nav a:hover { color:var(--txt); background:rgba(45,212,191,.06) }
+  .nav a.lo { color:var(--red); opacity:.75; font-weight:600 }
+  .nav a.lo:hover { color:var(--red); opacity:1; background:rgba(248,113,113,.08) }
   .nav a.active { color:var(--teal2); background:linear-gradient(90deg,rgba(45,212,191,.14),rgba(45,212,191,.03));
                   border-color:var(--line2); box-shadow:inset 0 0 18px rgba(45,212,191,.08) }
   .nav .ext { margin-top:auto }
+  .nav .lo-gap { margin-top:8px }
   .brand { display:flex; align-items:center; gap:10px; padding:6px 10px 18px }
   .brand .logo { width:34px; height:34px; border-radius:9px; display:grid; place-items:center;
     background:linear-gradient(135deg,#134e4a,#0f766e); box-shadow:0 0 14px rgba(45,212,191,.35);
@@ -417,7 +420,7 @@ PAGE = """<!doctype html>
       <a data-go="logs"><span class="ic">▤</span>Logs</a>
       <a data-go="policies"><span class="ic">✓</span>Policies</a>
       <a data-go="settings"><span class="ic">⚙</span>Settings</a>
-      <a class="ext" href="{{CHANNEL}}" target="_blank"><span class="ic">▸</span>Rumble Channel ↗</a>
+      <a class="ext" href="{{CHANNEL}}" target="_blank"><span class="ic">▸</span>Rumble Channel ↗</a><span class="lo-slot">{{LOGOUT}}</span>
     </nav>
   </aside>
   <main>
@@ -720,6 +723,8 @@ refresh(); setInterval(refresh, 5000);
 </body></html>"""
 
 if __name__ == "__main__":
+    # No login gate exists locally, so the logout entry stays off here.
+    PAGE = PAGE.replace('{{LOGOUT}}', '')
     PAGE = PAGE.replace("{{CHANNEL}}", "https://rumble.com/c/IndianHistoryOfficial")
     import threading
     try:
