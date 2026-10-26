@@ -85,7 +85,6 @@ def _sync_db(art: dict) -> bool:
             return False
         try:
             with zipfile.ZipFile(zpath) as zf:
-                db_tmp = Path(td) / "incoming.db"
                 targets = {n for n in zf.namelist()
                            if Path(n).name in ("ytauto.db", "rumble_stats.json")}
                 db_target = next((n for n in targets
@@ -93,15 +92,26 @@ def _sync_db(art: dict) -> bool:
                 if not db_target:
                     print("[ci-sync] artifact had no ytauto.db", flush=True)
                     return False
+                # Write the temp files INSIDE CI_DIR, not a /tmp tempdir: on
+                # GitHub runners /tmp is a different filesystem than the work
+                # directory, so os.replace across them dies with
+                # "Invalid cross-device link" — which silently (well, in a
+                # caught log line) skipped the whole DB swap for 17 deploys.
+                parts: list[Path] = []
+                db_tmp = CI_DIR / "ytauto.db.part"
                 db_tmp.write_bytes(zf.read(db_target))
+                parts.append(db_tmp)
                 for n in targets:
                     if Path(n).name == "rumble_stats.json":
-                        stats_tmp = Path(td) / "rumble_stats.json"
+                        stats_tmp = CI_DIR / "rumble_stats.json.part"
                         stats_tmp.write_bytes(zf.read(n))
+                        parts.append(stats_tmp)
                         stats_tmp.replace(CI_DIR / "rumble_stats.json")
-            os.replace(db_tmp, DB_OUT)  # atomic: dashboard never sees a half DB
+                os.replace(db_tmp, DB_OUT)  # atomic: dashboard never sees a half DB
         except (zipfile.BadZipFile, KeyError, OSError) as exc:
             print(f"[ci-sync] bad artifact: {exc}", flush=True)
+            for p in parts:
+                p.unlink(missing_ok=True)
             return False
     STAMP.parent.mkdir(parents=True, exist_ok=True)
     STAMP.write_text(art_id)

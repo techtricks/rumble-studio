@@ -152,6 +152,15 @@ def main() -> None:
     status = _status()
     videos = dash.api_videos()
     topics = dash.api_topics()
+    if not videos and not topics:
+        # An empty snapshot is never legitimate once the pipeline has run:
+        # it means the CI DB failed to sync (that's how the online dashboard
+        # once showed "no data" while everything was fine). Fail loudly so
+        # the workflow stops here and the live site keeps its last good copy.
+        print("FATAL: 0 videos and 0 topics — data/ci/ytauto.db did not sync "
+              "(see ci_sync output above); refusing to publish an empty site",
+              file=sys.stderr)
+        sys.exit(1)
     copied = _media([v.get("thumb") or "" for v in videos], site)
     for v in videos:
         if v.get("thumb") and v["thumb"] not in copied:
