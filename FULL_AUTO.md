@@ -3,6 +3,7 @@
 System har ghanta APNE AAP chalata hai. Aap sirf yeh check kar sakte ho:
 
 ## 🔴 LIVE DASHBOARD (sabse pehle yeh dekho!)
+**Online (kisi bhi device se): [https://rumblechannel.netlify.app](https://rumblechannel.netlify.app)** 🔒 password-protected
 ```bash
 open http://localhost:8600
 ```

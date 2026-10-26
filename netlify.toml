@@ -1,0 +1,9 @@
+# Netlify configuration for the online dashboard.
+# The site files themselves deploy from netlify_site/ (Actions: dashboard.yml
+# -> netlify CLI). This file is what binds the edge-function login gate.
+
+# Every URL — HTML, all.json, thumbnails — passes the gate first. The page
+# itself is the only exception, served by the gate function directly.
+[[edge_functions]]
+function = "dash_auth"
+path = "/*"

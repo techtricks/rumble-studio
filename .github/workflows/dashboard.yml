@@ -2,6 +2,8 @@ name: ytauto-dashboard
 
 # Publishes the online dashboard (netlify_site/) after every cycle and on a
 # timer, so the dashboard is reachable from anywhere — not only from the Mac.
+# Live at: https://rumblechannel.netlify.app  (URL rename se Site ID nahi
+# badalta, is workflow ke liye kuch nahi badalna hota).
 # Static snapshot: export_static.py bakes index.html + all.json from the
 # synced CI database and Netlify serves it.
 #
@@ -72,6 +74,22 @@ jobs:
           else
             echo "has=false" >> "$GITHUB_OUTPUT"
             echo "Netlify secrets missing — deploy skipped (dashboard.yml header has the one-time setup)"
+          fi
+
+      - name: Dashboard password → Netlify (edge gate, if set)
+        if: steps.tok.outputs.has == 'true'
+        env:
+          NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
+          NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
+          DASH_PASSWORD: ${{ secrets.DASH_PASSWORD }}
+        run: |
+          if [ -n "$DASH_PASSWORD" ]; then
+            npx --yes netlify-cli@latest env:set DASH_PASSWORD "$DASH_PASSWORD" \
+              --functions --force 2>/dev/null || \
+            npx --yes netlify-cli@latest env:set DASH_PASSWORD "$DASH_PASSWORD" --force
+            echo "edge gate password pushed"
+          else
+            echo "DASH_PASSWORD not set — dashboard stays open until the password secret exists"
           fi
 
       - name: Deploy to Netlify

@@ -55,6 +55,15 @@ Base voices Edge-TTS neural hain (Mac ke nahi), publish source Rumble hai.
   launchctl bootout gui/$UID/com.ytauto.cycle
   ```
   (Dashboard ka ek separate agent hai, wahan change karne ki koi zarurat nahi.)
+## 🌐 Online dashboard — https://rumblechannel.netlify.app
+- **Ek hi password-sabko**: ye gate Netlify edge function pe laga hai —
+  `edge/dash_auth.ts` site ke saare URL (all.json + media bhi) password ke piche
+  band karta hai. Password change karte hi purana login sab jagah se kat jata hai.
+- Password: Netsy secret `DASH_PASSWORD` (`gh secret set DASH_PASSWORD`) jis run
+  mein set hota hai wahi Netlify pe push ho jata hai.
+- Deploy: har cycle ke baad + har 30 min (`.github/workflows/dashboard.yml`) —
+  snapshot auto-update. Site ka naam Netlify app mein kabhi bhi badal sach hai
+  (site-Id same rehta hai, workflow कुछ nahi karta).
 - **YouTube abhi rehearsal hai** (`DRY_RUN=1`), jaisay humne decide kiya tha.
 - Quota: ek public repo pe monthly minutes unlimited, aur roz ONE cycle minna
   1 video/day, bohot pairavi hai.
