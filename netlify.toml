@@ -2,8 +2,14 @@
 # The site files themselves deploy from netlify_site/ (Actions: dashboard.yml
 # -> netlify CLI). This file is what binds the edge-function login gate.
 
-# Every URL — HTML, all.json, thumbnails — passes the gate first. The page
-# itself is the only exception, served by the gate function directly.
+# Edge functions live in netlify/edge-functions/ (Netlify's default location —
+# the earlier edge/ folder was never bundled, which is why the gate did not
+# engage on first deploy).
+[functions]
+[edge_functions]
+directory = "netlify/edge-functions"
+
+# Every URL — HTML, all.json, thumbnails — passes the gate first.
 [[edge_functions]]
 function = "dash_auth"
 path = "/*"
