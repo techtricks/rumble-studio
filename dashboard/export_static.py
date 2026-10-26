@@ -199,6 +199,40 @@ def main() -> None:
     phtml = phtml.replace(
         "server down? dashboard.py start karo",
         "snapshot unavailable (all.json missing?) — Actions deploy dekho")
+    # Auto-logout: a public-ish private dashboard shouldn't stay signed in on
+    # an unattended screen. Any human signal (mouse, keys, scroll, touch)
+    # resets the 2-minute idle clock; 30 s before the cut a toast warns, at
+    # 2:00 the browser is sent to /__dash_logout and the edge gate kills the
+    # session cookie. Browser-side only — good enough for a status dashboard.
+    phtml = phtml.replace("</body>", """<script id="idle-logout">
+(function () {
+  var IDLE_MS = 240000/2;          // 120000 ms — 2 minutes
+  var WARN_AT = 30000;             // toast when 30 s remain
+  var idle = 0, toast = null;
+  function reset() {
+    idle = 0;
+    if (toast) { toast.remove(); toast = null; }
+  }
+  ['pointermove','pointerdown','keydown','wheel','scroll','touchstart']
+    .forEach(function (ev) {
+      window.addEventListener(ev, reset, {passive: true});
+    });
+  setInterval(function () {
+    idle += 1000;
+    if (IDLE_MS - idle === WARN_AT && !toast) {
+      toast = document.createElement('div');
+      toast.textContent = '⏳ 2 min of no activity → auto-logout in 30s';
+      toast.setAttribute('style',
+        'position:fixed;bottom:18px;right:18px;z-index:999;' +
+        'background:#2a1215;color:#f87171;border:1px solid #7f1d1d;' +
+        'border-radius:12px;padding:12px 18px;font-size:14px;' +
+        'box-shadow:0 10px 30px rgba(0,0,0,.5)');
+      document.body.appendChild(toast);
+    }
+    if (idle >= IDLE_MS) location.href = '/__dash_logout';
+  }, 1000);
+})();
+</script></body>""", 1)
     (site / "index.html").write_text(phtml)
 
     print(f"static dashboard ready: {site}  "
