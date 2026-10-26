@@ -48,6 +48,9 @@ jobs:
           ci_sync.sync_once()
           EOF
 
+      - name: Python deps (config imports dotenv -> pydantic)
+        run: pip install --quiet -r requirements.txt
+
       - name: Build the static dashboard
         run: python dashboard/export_static.py
 

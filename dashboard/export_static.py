@@ -82,7 +82,14 @@ def _status() -> dict:
 def _settings_map() -> dict:
     """Mirror the local /api/settings: .env first, config defaults second."""
     import dashboard as dash
-    from ytauto.config import get_settings
+
+    vals = dash.api_settings()
+    if vals:
+        return {k: str(v) for k, v in vals.items() if v not in (None, "", [])}
+    try:
+        from ytauto.config import get_settings
+    except Exception:  # noqa: BLE001 — settings are cosmetic; never block the build
+        return {}
 
     vals = dash.api_settings()
     s = get_settings()
