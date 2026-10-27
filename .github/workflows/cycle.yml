@@ -150,12 +150,13 @@ jobs:
           # non-secret config (mirrors the Mac .env)
           LANGUAGE: English
           SUBTITLE_LANGUAGES: Hindi,Bengali,French
-          TARGET_AUDIENCE: "Indian history students,exam aspirants,history lovers"
+          TARGET_AUDIENCE: "Indian & world history students,exam aspirants,history lovers,battle & empire curious"
           BRAND: Indian History Facts
+          BRAND_TAGLINE: "Indian & world history — battles, sieges & empires explained"
           BRAND_URL: https://rumble.com/c/IndianHistoryOfficial
-          NICHE: "indian history,ancient india,mauryan empire,ashoka,gupta empire,chola dynasty,maratha empire,shivaji,mughal empire,aurangzeb,freedom struggle,revolt of 1857,indian independence,british raj,battle,war,army,warriors,fort,fortress,siege,conquest,empire,troops,cavalry,treasure,lost city,mystery,unsolved,secret,ancient engineering,weapon,sword,kingdom,invaded,raid"
+          NICHE: "indian history,world history,ancient india,mauryan empire,ashoka,gupta empire,chola dynasty,maratha empire,shivaji,mughal empire,aurangzeb,freedom struggle,revolt of 1857,indian independence,british raj,battle,war,army,warriors,fort,fortress,siege,conquest,empire,troops,cavalry,treasure,lost city,mystery,unsolved,secret,ancient engineering,weapon,sword,kingdom,invaded,raid,world war,world war 2,wwii,ww2,american civil war,american revolution,revolutionary war,roman empire,rome,roman,ancient greece,sparta,persia,egypt,pharaoh,medieval,crusades,knights,napoleon,ottoman empire,mongol empire,alexander the great,vikings,gladiator,carthage,hannibal,punic war,war of 1812,samurai,japan,revolution,battles"
           RSS_FEEDS: "https://www.worldhistory.org/rss/,https://www.smithsonianmag.com/rss/history/,https://www.medievalists.net/feed/,https://www.thehindu.com/society/history-and-culture/feeder/default.rss,https://theconversation.com/articles.atom,https://www.sapiens.org/feed/,https://www.ancient-origins.net/feed/"
-          SUBREDDITS: IndianHistory
+          SUBREDDITS: IndianHistory,HistoryPorn,AskHistorians,HistoryMemes
           # gpt-oss-120b: far higher output-token/min headroom than the small
           # preview models — the script stage kept getting 429-throttled there
           # and whole cycles blew past the runner budget.

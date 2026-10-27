@@ -63,5 +63,5 @@ sudo pmset -a displaysleep 10      # screen sleep theek hai
 - CI Cloudflare pe atke to: Mac pe `python -m ytauto rumble` chalake manual push kar do
 
 ## Safety rails jo ON hain
-- AUTO_APPROVE=1 lekin: research-confidence, niche (Indian history), duplicate & originality gates ke bina script auto-publish NAHI hota
+- AUTO_APPROVE=1 lekin: research-confidence, niche (Indian + world history — battles/empires), duplicate & originality gates ke bina script auto-publish NAHI hota
 - 6cc/CC-license images only, rotating voices — monetisation-safe defaults
