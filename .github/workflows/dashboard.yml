@@ -21,8 +21,10 @@ on:
   workflow_run:
     workflows: [ytauto-cycle]
     types: [completed]
-  schedule:
-    - cron: "*/30 * * * *"   # keeps the cycle badge fresh between cycles
+  # No timer on purpose: the free Netlify plan gives ~300 deploy credits per
+  # month and the data only changes when a cycle runs (twice a day). The old
+  # */30 cron burned ~1,500 deploys/month, exhausted the credits and Netlify
+  # then blocked every deploy (Forbidden) for two days.
   workflow_dispatch:
 
 permissions:
@@ -78,6 +80,7 @@ jobs:
 
       - name: Dashboard password → Netlify (edge gate, if set)
         if: steps.tok.outputs.has == 'true'
+        continue-on-error: true   # token/credit hiccups must not fail the build
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
@@ -86,20 +89,23 @@ jobs:
           if [ -n "$DASH_PASSWORD" ]; then
             npx --yes netlify-cli@latest env:set DASH_PASSWORD "$DASH_PASSWORD" \
               --functions --force 2>/dev/null || \
-            npx --yes netlify-cli@latest env:set DASH_PASSWORD "$DASH_PASSWORD" --force
-            echo "edge gate password pushed"
+            npx --yes netlify-cli@latest env:set DASH_PASSWORD "$DASH_PASSWORD" --force || \
+            echo "::warning::Netlify env:set failed (credits/token) — gate keeps the last value"
+            echo "edge gate password push attempted"
           else
             echo "DASH_PASSWORD not set — dashboard stays open until the password secret exists"
           fi
 
       - name: Deploy to Netlify
-        if: steps.tok.outputs.has == 'true'
+        continue-on-error: true   # credits exhausted or token expired: keep last snapshot live
         env:
           NETLIFY_AUTH_TOKEN: ${{ secrets.NETLIFY_AUTH_TOKEN }}
           NETLIFY_SITE_ID: ${{ secrets.NETLIFY_SITE_ID }}
         run: |
-          npx --yes netlify-cli@latest deploy \
+          if ! npx --yes netlify-cli@latest deploy \
             --dir netlify_site --prod \
             --auth "$NETLIFY_AUTH_TOKEN" \
             --site "$NETLIFY_SITE_ID" \
-            --message "dashboard snapshot from Actions"
+            --message "dashboard snapshot from Actions"; then
+            echo "::warning::Netlify deploy blocked (credit limit or token) — dashboard-site artifact still saved; last live snapshot stays up"
+          fi
