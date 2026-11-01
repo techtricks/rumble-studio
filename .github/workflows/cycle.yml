@@ -196,10 +196,13 @@ jobs:
         # The cycle step exits 1 on honest per-item errors (a timed-out
         # render, a thin topic); those videos that did finish must still go
         # live. The uploader refuses gracefully when its media is missing.
+        # DRY_RUN is explicit here: the default (unset) is 1, so a rehearsed
+        # dispatch must not publish while a scheduled run must.
         env:
           RUMBLE_EMAIL: ${{ secrets.RUMBLE_EMAIL }}
           RUMBLE_PASSWORD: ${{ secrets.RUMBLE_PASSWORD }}
           RUMBLE_CHANNEL: ${{ secrets.RUMBLE_CHANNEL }}
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
         # Cloudflare sometimes blocks runner IPs; a failed upload must not
         # void the state artifact, so this step is allowed to fail.
         continue-on-error: true

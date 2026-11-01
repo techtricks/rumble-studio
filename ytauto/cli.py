@@ -446,6 +446,15 @@ def cmd_rumble(args: argparse.Namespace) -> int:
     """
     from .pipeline.upload_rumble import RumbleUploader
 
+    # The publish step in the workflows runs `if: always()`, so it fires on a
+    # rehearsed run too — without this guard a dry_run=true dispatch still put
+    # two videos live on the sea channel. DRY_RUN is the same switch the
+    # YouTube path honours; --force is the manual override.
+    if get_settings().dry_run and not getattr(args, "force", False):
+        warn("DRY_RUN=1 — skipping the Rumble upload (set DRY_RUN=0 or pass "
+             "--force to publish for real)")
+        return 0
+
     db = get_db()
     uploader = RumbleUploader(db=db, headless=not args.headed)
     if args.video_id:
@@ -843,6 +852,11 @@ def build_parser() -> argparse.ArgumentParser:
         "--headed",
         action="store_true",
         help="show the browser window while uploading (default: headless)",
+    )
+    rm.add_argument(
+        "--force",
+        action="store_true",
+        help="publish even when DRY_RUN=1 (manual override)",
     )
     rm.set_defaults(func=cmd_rumble)
 

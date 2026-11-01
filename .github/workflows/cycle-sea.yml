@@ -180,10 +180,13 @@ jobs:
 
       - name: Publish to Rumble (longform + shorts rendered this cycle)
         if: always()
+        # Same DRY_RUN contract as cycle.yml: rehearse stays offline, a
+        # scheduled (or explicitly live) run publishes.
         env:
           RUMBLE_EMAIL: ${{ secrets.RUMBLE_EMAIL }}
           RUMBLE_PASSWORD: ${{ secrets.RUMBLE_PASSWORD }}
           RUMBLE_CHANNEL: ${{ secrets.RUMBLE_CHANNEL_SEA }}
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
         continue-on-error: true
         run: python -m ytauto rumble
 
