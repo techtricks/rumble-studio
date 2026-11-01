@@ -39,8 +39,8 @@ def active_db() -> Path:
     return CI_DB if CI_DB.exists() else DB
 
 
-def db_rows(sql: str, args: tuple = ()) -> list[dict]:
-    db = active_db()
+def db_rows(sql: str, args: tuple = (), *, db_path: "Path | None" = None) -> list[dict]:
+    db = db_path or active_db()
     if not db.exists():
         return []
     conn = sqlite3.connect(f"file:{db}?mode=ro", uri=True)
@@ -81,12 +81,15 @@ def api_settings() -> dict:
     return vals
 
 
-def api_status() -> dict:
+def api_status(db_path: "Path | None" = None) -> dict:
     counts = {r["status"]: r["c"] for r in db_rows(
-        "select status, count(*) c from videos group by status")}
+        "select status, count(*) c from videos group by status",
+        db_path=db_path)}
     topic_counts = {r["status"]: r["c"] for r in db_rows(
-        "select status, count(*) c from topics group by status")}
-    runs = db_rows("select * from runs order by started_at desc limit 20")
+        "select status, count(*) c from topics group by status",
+        db_path=db_path)}
+    runs = db_rows("select * from runs order by started_at desc limit 20",
+                   db_path=db_path)
     last_run = runs[0] if runs else None
     running = _live_cycle()
 
@@ -120,7 +123,8 @@ def api_status() -> dict:
     cookies = ROOT / "secrets" / "rumble_cookies.json"
     alive = sum(v for k, v in counts.items() if k not in ("archived", "failed"))
     published = counts.get("published", 0)
-    attempts = db_rows("select count(*) c from videos") or [{"c": 0}]
+    attempts = db_rows("select count(*) c from videos",
+                       db_path=db_path) or [{"c": 0}]
     total_ever = attempts[0]["c"] if attempts else 0
     success = round(100 * published / total_ever) if total_ever else 0
 
@@ -191,12 +195,12 @@ def api_status() -> dict:
     }
 
 
-def api_videos() -> list[dict]:
+def api_videos(db_path: "Path | None" = None) -> list[dict]:
     rows = db_rows(
         """select id, status, kind, title, duration_s, attempts, youtube_id,
                   substr(last_error,1,160) as error,
                   created_at, updated_at, video_path, thumb_path
-           from videos order by updated_at desc limit 60""")
+           from videos order by updated_at desc limit 60""", db_path=db_path)
     for r in rows:
         vp = r.get("video_path") or ""
         tp = r.get("thumb_path") or ""
@@ -205,12 +209,12 @@ def api_videos() -> list[dict]:
     return rows
 
 
-def api_topics() -> list[dict]:
+def api_topics(db_path: "Path | None" = None) -> list[dict]:
     return db_rows(
         """select id, status, source, round(niche_score,2) niche,
                   round(total_score,2) total, substr(reject_reason,1,120) reason,
                   substr(title,1,90) title, created_at
-           from topics order by created_at desc limit 60""")
+           from topics order by created_at desc limit 60""", db_path=db_path)
 
 
 def api_logs() -> dict:

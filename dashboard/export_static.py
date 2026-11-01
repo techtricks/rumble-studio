@@ -26,7 +26,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "dashboard"))
 
 
-def _status() -> dict:
+def _status(db_path: "Path | None" = None) -> dict:
     """Cloud-flavoured /api/status: the DB is the synced CI one."""
     import dashboard as dash
     import ci_sync
@@ -36,7 +36,7 @@ def _status() -> dict:
     # at startup (its __main__ block). Bind it here the same way.
     dash.ci_sync = ci_sync
 
-    s = dash.api_status()
+    s = dash.api_status(db_path)
     ci = run_status()
     gh_runs = ci.get("runs") or []
     active = [r for r in gh_runs if r.get("status") in ("in_progress", "queued")]
@@ -137,74 +137,13 @@ def _media(db_thumbs: list[str], site: Path) -> set[str]:
     return copied
 
 
-def main() -> None:
-    ap = argparse.ArgumentParser(description=__doc__)
-    ap.add_argument("--dest", default=str(ROOT / "netlify_site"),
-                    help="output folder (default netlify_site/)")
-    args = ap.parse_args()
-    site = Path(args.dest).resolve()
-    if site.exists():
-        shutil.rmtree(site)
-    site.mkdir(parents=True)
+SEA_DB = ROOT / "data" / "ci" / "ytauto_sea.db"
 
-    import dashboard as dash
-
-    status = _status()
-    videos = dash.api_videos()
-    topics = dash.api_topics()
-    if not videos and not topics:
-        # An empty snapshot is never legitimate once the pipeline has run:
-        # it means the CI DB failed to sync (that's how the online dashboard
-        # once showed "no data" while everything was fine). Fail loudly so
-        # the workflow stops here and the live site keeps its last good copy.
-        print("FATAL: 0 videos and 0 topics — data/ci/ytauto.db did not sync "
-              "(see ci_sync output above); refusing to publish an empty site",
-              file=sys.stderr)
-        sys.exit(1)
-    copied = _media([v.get("thumb") or "" for v in videos], site)
-    for v in videos:
-        if v.get("thumb") and v["thumb"] not in copied:
-            v["thumb"] = None
-    logs = {
-        "lines": 0,
-        "text": "Cloud snapshot — live logs GitHub Actions run pe hi hain.\n"
-                "Dashboard > GitHub card <ha> run page khol deta hai "
-                "(xiety logs ke saath).\n"
-                "https://github.com/techtricks/rumble-studio/actions",
-    }
-    payload = {
-        "status": status,
-        "videos": videos,
-        "topics": topics,
-        "logs": logs,
-        "settings": _settings_map(),
-    }
-    (site / "all.json").write_text(json.dumps(payload, default=str))
-
-    phtml = dash.PAGE.replace(
-        "{{CHANNEL}}", "https://rumble.com/c/IndianHistoryOfficial")
-    # static reads: all.json instead of /api; the rebuild timer (Actions)
-    # refreshes the fact, the page just keeps itself modern on the screen.
-    phtml = phtml.replace("fetch('/api/all')", "fetch('./all.json')")
-    # logout: server-side cookie kill via the edge gate, with a confirm so a
-    # stray click doesn't lock the user out mid-review.
-    phtml = phtml.replace(
-        '<span class="lo-slot">{{LOGOUT}}</span>',
-        '<a class="ext lo-gap lo" href="/__dash_logout" '
-        'onclick="return confirm(&quot;Log out? Url dobara kholne pe password '
-        'maangega.&quot;)"><span class="ic">🚪</span>Logout</a>')
-    phtml = phtml.replace(
-        "refresh(); setInterval(refresh, 5000);",
-        "refresh(); setInterval(() => location.reload(), 240000);")
-    phtml = phtml.replace(
-        "server down? dashboard.py start karo",
-        "snapshot unavailable (all.json missing?) — Actions deploy dekho")
-    # Auto-logout: a public-ish private dashboard shouldn't stay signed in on
-    # an unattended screen. Any human signal (mouse, keys, scroll, touch)
-    # resets the 2-minute idle clock; 30 s before the cut a toast warns, at
-    # 2:00 the browser is sent to /__dash_logout and the edge gate kills the
-    # session cookie. Browser-side only — good enough for a status dashboard.
-    phtml = phtml.replace("</body>", """<script id="idle-logout">
+# Auto-logout: a public-ish private dashboard shouldn't stay signed in on an
+# unattended screen. Any human signal resets the 2-minute idle clock; 30 s
+# before the cut a toast warns, at 2:00 the browser is sent to /__dash_logout
+# and the edge gate kills the session cookie. Browser-side only.
+_IDLE_JS = """<script id="idle-logout">
 (function () {
   var IDLE_MS = 240000/2;          // 120000 ms — 2 minutes
   var WARN_AT = 30000;             // toast when 30 s remain
@@ -232,11 +171,122 @@ def main() -> None:
     if (idle >= IDLE_MS) location.href = '/__dash_logout';
   }, 1000);
 })();
-</script></body>""", 1)
-    (site / "index.html").write_text(phtml)
+</script></body>"""
+
+_LOGOUT_HTML = (' <a class="ext lo-gap lo" href="/__dash_logout" '
+                'onclick="return confirm(&quot;Log out? Url dobara kholne pe '
+                'password maangega.&quot;)"><span class="ic">🚪</span>Logout</a>')
+
+
+def _page_html(dash, *, channel_url: str, json_name: str, switch_html: str,
+               sea: bool = False) -> str:
+    """The shared PAGE template, pointed at a static snapshot."""
+    phtml = dash.PAGE.replace("{{CHANNEL}}", channel_url)
+    # static reads: all*.json instead of /api; the rebuild timer (Actions)
+    # refreshes the fact, the page just keeps itself modern on the screen.
+    phtml = phtml.replace("fetch('/api/all')", f"fetch('./{json_name}')")
+    # logout (edge-gate cookie kill, confirm-guarded) + channel switcher,
+    # both living in the sidebar slot after the Rumble Channel link.
+    phtml = phtml.replace('<span class="lo-slot">{{LOGOUT}}</span>',
+                          switch_html + _LOGOUT_HTML)
+    phtml = phtml.replace(
+        "refresh(); setInterval(refresh, 5000);",
+        "refresh(); setInterval(() => location.reload(), 240000);")
+    phtml = phtml.replace(
+        "server down? dashboard.py start karo",
+        "snapshot unavailable (all.json missing?) — Actions deploy dekho")
+    if sea:
+        phtml = phtml.replace(
+            "<title>Rumble Studio — Indian History pipeline</title>",
+            "<title>Rumble Studio — Ocean channel</title>")
+        phtml = phtml.replace("<small>Indian History · Auto videos</small>",
+                              "<small>Ocean · Underwater life</small>")
+    return phtml.replace("</body>", _IDLE_JS, 1)
+
+
+def _payload(status: dict, videos: list, topics: list, settings: dict) -> dict:
+    logs = {
+        "lines": 0,
+        "text": "Cloud snapshot — live logs GitHub Actions run pe hi hain.\n"
+                "Dashboard > GitHub card <ha> run page khol deta hai "
+                "(xiety logs ke saath).\n"
+                "https://github.com/techtricks/rumble-studio/actions",
+    }
+    return {"status": status, "videos": videos, "topics": topics,
+            "logs": logs, "settings": settings}
+
+
+def main() -> None:
+    ap = argparse.ArgumentParser(description=__doc__)
+    ap.add_argument("--dest", default=str(ROOT / "netlify_site"),
+                    help="output folder (default netlify_site/)")
+    args = ap.parse_args()
+    site = Path(args.dest).resolve()
+    if site.exists():
+        shutil.rmtree(site)
+    site.mkdir(parents=True)
+
+    import dashboard as dash
+
+    # ---------- history channel: index.html + all.json ----------
+    status = _status()
+    videos = dash.api_videos()
+    topics = dash.api_topics()
+    if not videos and not topics:
+        # An empty snapshot is never legitimate once the pipeline has run:
+        # it means the CI DB failed to sync (that's how the online dashboard
+        # once showed "no data" while everything was fine). Fail loudly so
+        # the workflow stops here and the live site keeps its last good copy.
+        print("FATAL: 0 videos and 0 topics — data/ci/ytauto.db did not sync "
+              "(see ci_sync output above); refusing to publish an empty site",
+              file=sys.stderr)
+        sys.exit(1)
+    copied = _media([v.get("thumb") or "" for v in videos], site)
+    for v in videos:
+        if v.get("thumb") and v["thumb"] not in copied:
+            v["thumb"] = None
+    settings = _settings_map()
+    (site / "all.json").write_text(
+        json.dumps(_payload(status, videos, topics, settings), default=str))
+
+    # ---------- sea channel: sea.html + all_sea.json ----------
+    # The sea pipeline is newer than the dashboard: before its FIRST cycle
+    # finishes there is no ytauto_sea.db at all. That is not an error — the
+    # ocean page then shows an honest empty state and fills in on the next
+    # build after the first sea cycle persists its state artifact.
+    sea_videos: list = []
+    sea_topics: list = []
+    sea_status = status
+    if SEA_DB.exists():
+        sea_videos = dash.api_videos(SEA_DB)
+        sea_topics = dash.api_topics(SEA_DB)
+        sea_status = _status(SEA_DB)
+        sea_copied = _media([v.get("thumb") or "" for v in sea_videos], site)
+        for v in sea_videos:
+            if v.get("thumb") and v["thumb"] not in sea_copied:
+                v["thumb"] = None
+    else:
+        print("[sea] no data/ci/ytauto_sea.db yet — ocean page ships empty "
+              "until the first sea cycle persists its state")
+    (site / "all_sea.json").write_text(
+        json.dumps(_payload(sea_status, sea_videos, sea_topics, settings),
+                   default=str))
+
+    # ---------- pages + sidebar cross-links ----------
+    hist_switch = ('<a class="ext" style="margin-top:0" href="./sea.html">'
+                   '<span class="ic">🌊</span>Ocean Channel</a>')
+    sea_switch = ('<a class="ext" style="margin-top:0" href="./index.html">'
+                  '<span class="ic">📜</span>History Channel</a>')
+    (site / "index.html").write_text(_page_html(
+        dash, channel_url="https://rumble.com/c/IndianHistoryOfficial",
+        json_name="all.json", switch_html=hist_switch))
+    (site / "sea.html").write_text(_page_html(
+        dash, channel_url="https://rumble.com/c/BlueDeepFacts",
+        json_name="all_sea.json", switch_html=sea_switch, sea=True))
 
     print(f"static dashboard ready: {site}  "
-          f"({len(videos)} videos, {len(topics)} topics, {len(copied)} thumbs)")
+          f"(history: {len(videos)} videos / {len(topics)} topics | "
+          f"sea: {len(sea_videos)} videos / {len(sea_topics)} topics)")
 
 
 if __name__ == "__main__":

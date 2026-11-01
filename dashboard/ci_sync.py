@@ -25,6 +25,10 @@ CI_DIR = Path(__file__).resolve().parent.parent / "data" / "ci"
 DB_OUT = CI_DIR / "ytauto.db"
 STAMP = CI_DIR / "state.stamp"
 RUNS_OUT = CI_DIR / "runs.json"
+# The sea channel keeps its own state artifact; its DB feeds the dashboard's
+# ocean page. Both sync in one pass.
+SEA_DB = CI_DIR / "ytauto_sea.db"
+SEA_STAMP = CI_DIR / "state_sea.stamp"
 
 
 def _gh() -> str:
@@ -62,8 +66,8 @@ def _api(path: str, out: Path | None = None, *, stream: bool = False) -> tuple:
             tmp.unlink(missing_ok=True)
 
 
-def _latest_artifact() -> dict:
-    ok, data = _api(f"repos/{REPO}/actions/artifacts?name=ytauto-state&per_page=1")
+def _latest_artifact(name: str = "ytauto-state") -> dict:
+    ok, data = _api(f"repos/{REPO}/actions/artifacts?name={name}&per_page=1")
     if not ok:
         return {}
     arts = (data.get("artifacts") or [])
@@ -71,10 +75,11 @@ def _latest_artifact() -> dict:
     return {} if art.get("expired") else art
 
 
-def _sync_db(art: dict) -> bool:
+def _sync_db(art: dict, *, db_out: Path = DB_OUT, stamp: Path = STAMP,
+             want_stats: bool = True) -> bool:
     """Download a newer state artifact and swap ytauto.db atomically."""
     art_id = str(art.get("id", ""))
-    if not art_id or (STAMP.exists() and STAMP.read_text().strip() == art_id):
+    if not art_id or (stamp.exists() and stamp.read_text().strip() == art_id):
         return False
     with tempfile.TemporaryDirectory() as td:
         zpath = Path(td) / "state.zip"
@@ -98,23 +103,24 @@ def _sync_db(art: dict) -> bool:
                 # "Invalid cross-device link" — which silently (well, in a
                 # caught log line) skipped the whole DB swap for 17 deploys.
                 parts: list[Path] = []
-                db_tmp = CI_DIR / "ytauto.db.part"
+                db_tmp = db_out.with_suffix(db_out.suffix + ".part")
                 db_tmp.write_bytes(zf.read(db_target))
                 parts.append(db_tmp)
-                for n in targets:
-                    if Path(n).name == "rumble_stats.json":
-                        stats_tmp = CI_DIR / "rumble_stats.json.part"
-                        stats_tmp.write_bytes(zf.read(n))
-                        parts.append(stats_tmp)
-                        stats_tmp.replace(CI_DIR / "rumble_stats.json")
-                os.replace(db_tmp, DB_OUT)  # atomic: dashboard never sees a half DB
+                if want_stats:
+                    for n in targets:
+                        if Path(n).name == "rumble_stats.json":
+                            stats_tmp = CI_DIR / "rumble_stats.json.part"
+                            stats_tmp.write_bytes(zf.read(n))
+                            parts.append(stats_tmp)
+                            stats_tmp.replace(CI_DIR / "rumble_stats.json")
+                os.replace(db_tmp, db_out)  # atomic: dashboard never sees a half DB
         except (zipfile.BadZipFile, KeyError, OSError) as exc:
             print(f"[ci-sync] bad artifact: {exc}", flush=True)
             for p in parts:
                 p.unlink(missing_ok=True)
             return False
-    STAMP.parent.mkdir(parents=True, exist_ok=True)
-    STAMP.write_text(art_id)
+    stamp.parent.mkdir(parents=True, exist_ok=True)
+    stamp.write_text(art_id)
     return True
 
 
@@ -143,11 +149,16 @@ def _sync_runs() -> None:
 
 
 def sync_once() -> None:
-    """One full sync pass (never raises)."""
+    """One full sync pass (never raises): history channel + sea channel."""
     CI_DIR.mkdir(parents=True, exist_ok=True)
     art = _latest_artifact()
     if art and _sync_db(art):
         print(f"[ci-sync] state DB updated (artifact {art['id']})", flush=True)
+    sea = _latest_artifact("ytauto-state-sea")
+    if sea and _sync_db(sea, db_out=SEA_DB, stamp=SEA_STAMP,
+                        want_stats=False):
+        print(f"[ci-sync] sea state DB updated (artifact {sea['id']})",
+              flush=True)
     _sync_runs()
 
 
