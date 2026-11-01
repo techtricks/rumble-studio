@@ -86,6 +86,25 @@ _STOPWORDS = frozenset(
     this that these those it its into over under about after before""".split()
 )
 
+# Editorial noise: words that say WHEN or HOW a story is framed, not WHAT it
+# shows. Image archives index nouns and entities, so searching these returns
+# places and artworks that merely contain the word: "5 Bright Planets to Spot
+# in November" pulled in a town called Bright (twice), a movie premiere named
+# Bright and three places named "Spot" — a whole video of mountains and post
+# offices instead of planets.
+_MONTHS = frozenset(
+    "january february march april may june july august september october "
+    "november december".split()
+)
+_NOISE = frozenset(
+    """bright dark spot spots watch watches find finds found look looks
+    hear heard makes making made means meant really literally fact facts
+    story stories explained explainer meaning future ever never always best
+    worst top ultimate complete real true full hidden secret rare weird
+    strange crazy beautiful famous deadly dangerous huge massive giant tiny
+    big small tests test where""".split()
+)
+
 _WIKI_SUMMARY = "https://en.wikipedia.org/api/rest_v1/page/summary/{title}"
 _COMMONS_API = "https://commons.wikimedia.org/w/api.php"
 _OPENVERSE_API = "https://api.openverse.org/v1/images/"
@@ -156,7 +175,7 @@ def _usable(c: _Candidate) -> bool:
     return True
 
 
-def _relevant(c: _Candidate, keys: Sequence[str]) -> bool:
+def _relevant(c: _Candidate, keys: Sequence[str], domain: Optional[str] = None) -> bool:
     """Does the picture actually look like it is about this story?
 
     Commons and Openverse are full-text searches, so a query for "Flipkart
@@ -167,8 +186,15 @@ def _relevant(c: _Candidate, keys: Sequence[str]) -> bool:
     a server rack for a story about a checkout button is the same failure with
     better manners, so this also rejects candidates whose title says nothing at
     all about the subject.
+
+    Word overlap alone is too strict for picture titles, though: a "Planets"
+    story legitimately ships "Jupiter and Saturn conjunction in the night sky",
+    which shares no word with the query. So a second pass accepts pictures that
+    name the story's own domain nouns — planet, telescope, ocean, coral, fort —
+    which keeps the topic's *genre* on screen even when the exact entity word
+    is missing. The town called Bright still dies here: it names no space noun.
     """
-    if not keys:
+    if not keys and not domain:
         return True
     hay = f"{c.title} {c.meta.get('description', '')}".lower()
     if not hay.strip():
@@ -188,6 +214,8 @@ def _relevant(c: _Candidate, keys: Sequence[str]) -> bool:
         # A light stem so "robots" matches "robot" and "phones" matches "phone".
         if k.rstrip("s") in hay or k + "s" in hay:
             return True
+    if domain and _DOMAIN_HINT_RES[domain].search(hay):
+        return True
     return False
 
 
@@ -352,26 +380,37 @@ def _keywords(title: str, tags: Sequence[str] = ()) -> List[str]:
     — contributes editorial words like "Art" or "Absence" that search engines
     happily match into unrelated pictures. So the words before the colon come
     first, tags next, and the subtitle is only mined when the entity part
-    alone looks too thin to build varied queries from.
+    alone looks too thin to build varied queries from — and even then only
+    words that belong to the story's own domain survive, so a sea story
+    keeps "Turtles" while "Shoreless" is dropped. Editorial framing words
+    (bright, spot, november, story, ...) never survive at all: they are how
+    a planets video ended up searching a town called Bright.
     """
     entity, _, subtitle = (title or "").partition(":")
+    dom = _domain(f"{title} {' '.join(str(t) for t in tags)}")
+    domain_words = _DOMAIN_HINT_RES[dom]
     words: List[str] = []
-    for w in re.findall(r"[A-Za-z][A-Za-z0-9+.\-]{2,}", entity or title or ""):
-        if w.lower() in _STOPWORDS or w.lower() in {x.lower() for x in words}:
-            continue
+
+    def _add(w: str) -> bool:
+        low = w.lower()
+        if low in _STOPWORDS or low in _MONTHS or low in _NOISE:
+            return False
+        if any(low == x.lower() for x in words):
+            return False
         words.append(w)
+        return True
+
+    for w in re.findall(r"[A-Za-z][A-Za-z0-9+.\-]{2,}", entity or title or ""):
+        _add(w)
     # Numbers in an entity ("1857", "9-Story") are searchable history anchors.
     for t in tags or []:
         for w in re.findall(r"[A-Za-z][A-Za-z0-9+.\-]{2,}", str(t)):
-            if w.lower() in _STOPWORDS or w.lower() in {x.lower() for x in words}:
-                continue
-            words.append(w)
-            break
+            if _add(w):
+                break
     if len(words) < 4 and subtitle:
         for w in re.findall(r"[A-Za-z][A-Za-z0-9+.\-]{2,}", subtitle):
-            if w.lower() in _STOPWORDS or w.lower() in {x.lower() for x in words}:
-                continue
-            words.append(w)
+            if domain_words.search(w):
+                _add(w)
     return words
 
 
@@ -384,14 +423,70 @@ TECH_FACETS = [
     "technology", "electronics", "gadgets", "data center", "circuit board",
     "server", "smartphone", "chip", "software", "developer",
 ]
+# The sea and space channels need their OWN visual vocabulary. Before these
+# existed, a space title fell through to the history default and searched
+# "Planets temple" and "Spot palace" — facet words that no planet photo
+# carries, so the relevance gate kept whatever matched the entity word alone.
+SPACE_FACETS = [
+    "night sky", "telescope", "planet", "astronomy", "solar system",
+    "observatory", "star cluster", "galaxy", "spacecraft", "moon",
+]
+SEA_FACETS = [
+    "ocean", "marine life", "underwater", "coral reef", "tropical fish",
+    "deep sea", "coast", "seabed", "dolphin", "shipwreck",
+]
+DOMAIN_FACETS = {
+    "history": HISTORY_FACETS,
+    "tech": TECH_FACETS,
+    "space": SPACE_FACETS,
+    "sea": SEA_FACETS,
+}
 _HISTORY_HINT_RE = re.compile(
-    r"\b(empire|dynasty|temple|king|queen|maharaja|maratha|mauryan|mughal|gupta|"
+    r"\b(empire|dynast(?:y|ies)|temple|king|queen|maharaja|maratha|mauryan|mughal|gupta|"
     r"chola|stupa|fort|palace|monument|ruins|ancient|medieval|heritage|"
     r"civilisation|civilization|battle|war|histor(?:y|ic)|archaeolog|"
     r"1857|independence|raj|pillar|manuscript|inscription)\b", re.I)
 _TECH_HINT_RE = re.compile(
     r"\b(tech(?:nology)?|ai\b|artificial intelligence|app\b|software|chip|gpu|"
     r"startup|data|robot|drone|battery|smartphone|internet|code|api|cloud)\b", re.I)
+_SPACE_HINT_RE = re.compile(
+    r"\b(planet|planets|planetary|stars?|starry|galax(?:y|ies)|nebula|"
+    r"constellations?|telescopes?|orbit|orbits|asteroids?|comets?|meteors?|"
+    r"supernovae?|pulsars?|quasars?|black holes?|neutron|cosmos|cosmic|"
+    r"universe|astronom\w*|astronauts?|rockets?|spacex|nasa|esa\b|jwst|"
+    r"hubble|voyager|apollo|solar system|eclipses?|auroras?|mars|jupiter|"
+    r"saturn|venus|mercury|neptune|uranus|pluto|milky way|moons?|lunar|"
+    r"solar|exoplanets?|dark matter|dark energy|gravit\w*|interstellar|"
+    r"observatories|observatory|skies|sky|starlight|light years?|pale blue dot)\b",
+    re.I)
+_SEA_HINT_RE = re.compile(
+    r"\b(oceans?|seas?|marine|underwater|corals?|reefs?|fish|fishes|whales?|"
+    r"dolphins?|sharks?|seals?|turtles?|octopuses?|squid|jellyfish|jelly|"
+    r"eels?|sponges?|plankton|kelp|mangroves?|tides?|tidal|coasts?|coastal|"
+    r"deep[- ]sea|divers?|diving|shipwrecks?|submarines?|sargasso|mariana|"
+    r"trench|seabeds?|oceanic|brine|lagoons?|atolls?|estuaries|seagrass|"
+    r"abyss|hydrothermal)\b", re.I)
+_DOMAIN_HINT_RES = {
+    "history": _HISTORY_HINT_RE,
+    "tech": _TECH_HINT_RE,
+    "space": _SPACE_HINT_RE,
+    "sea": _SEA_HINT_RE,
+}
+# Tie-break order: history is the engine's home domain, so it wins a draw.
+_DOMAIN_ORDER = ("history", "space", "sea", "tech")
+
+
+def _domain(text: str) -> str:
+    """Which visual vocabulary this story belongs to.
+
+    Counts each domain's hint words in the title+tags and takes the winner —
+    a single hard-coded domain cannot serve an engine that now writes history,
+    sea AND space videos. A title with no hints at all stays history, which
+    is the behaviour every existing channel was tuned against.
+    """
+    counts = {d: len(_DOMAIN_HINT_RES[d].findall(text or "")) for d in _DOMAIN_ORDER}
+    best = max(_DOMAIN_ORDER, key=lambda d: (counts[d], -_DOMAIN_ORDER.index(d)))
+    return best if counts[best] else "history"
 
 
 def build_queries(title: str, tags: Sequence[str] = ()) -> List[str]:
@@ -400,24 +495,36 @@ def build_queries(title: str, tags: Sequence[str] = ()) -> List[str]:
     Each phrase pairs a different entity or facet with a different visual
     noun, chosen from the domain the story is actually about. The facets used
     to be a hardcoded technology list, which made a history channel search
-    "Art gadgets" and "Absence data center" — the reason behind-topic slides
-    were generic stock photos. History is the channel's home domain, so it is
-    the default when the title carries no clear domain hints.
+    "Art gadgets" and "Absence data center" — then a history/tech-only split
+    made a SPACE channel search "Planets temple". _domain() now picks the
+    vocabulary from the title itself (history / tech / space / sea), and a
+    title whose keywords all got filtered as editorial noise still gets
+    domain-vocabulary queries instead of nothing.
     """
+    if not (title or "").strip() and not tags:
+        return []
     text = f"{title} {' '.join(str(t) for t in tags)}"
-    if _TECH_HINT_RE.search(text) and not _HISTORY_HINT_RE.search(text):
-        facets = TECH_FACETS
-    else:
-        facets = HISTORY_FACETS
+    facets = DOMAIN_FACETS[_domain(text)]
     keys = _keywords(title, tags)
     if not keys:
-        return []
+        # Nothing searchable survived the noise filter — search the domain's
+        # own visual nouns rather than nothing, so the relevance gate still
+        # has something honest to hold pictures against.
+        return [f"{facets[0]} {facets[1]}", facets[2]] if len(facets) >= 3 else []
     queries: List[str] = []
     for i, key in enumerate(keys[:4]):
         if i == 0:
             queries.append(key)
         else:
             queries.append(f"{key} {facets[i % len(facets)]}")
+    # One entity word ("Planets") would otherwise repeat a single photo all
+    # video: pad with the domain's visual vocabulary for variety, skipping a
+    # facet that is just the key's own stem ("Planets planet").
+    i = 1
+    while len(queries) < 3 and i < len(facets):
+        if facets[i].split()[0].lower().rstrip("s") != keys[0].lower().rstrip("s"):
+            queries.append(f"{keys[0]} {facets[i]}")
+        i += 1
     return queries
 
 
@@ -436,13 +543,20 @@ def collect(
     if url:
         cands.extend(article_images(url, limit=3))
     keys = _keywords(title, tags)
+    dom = _domain(f"{title} {' '.join(str(t) for t in tags)}")
+    if not keys:
+        # The gate must never be wide open: with no searchable word left,
+        # hold every picture to the domain's own vocabulary instead.
+        keys = DOMAIN_FACETS[dom][:2]
     for q in build_queries(title, tags):
         if len(cands) >= limit * 2:
             break
         # Commons first for a bare entity name: the licensing is clearer and the
         # pictures are usually more representative of the product.
-        cands.extend(c for c in commons_images(q, limit=3) if _relevant(c, keys))
-        cands.extend(c for c in openverse_images(q, limit=3) if _relevant(c, keys))
+        cands.extend(c for c in commons_images(q, limit=3)
+                     if _relevant(c, keys, domain=dom))
+        cands.extend(c for c in openverse_images(q, limit=3)
+                     if _relevant(c, keys, domain=dom))
 
     seen = set()
     out: List[_Candidate] = []

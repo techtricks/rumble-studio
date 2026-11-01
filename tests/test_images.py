@@ -178,6 +178,76 @@ def test_build_queries_empty_title():
     assert images.build_queries("", []) == []
 
 
+# ------------------------------------------- the first space run's garbage
+# The first space video shipped a whole town instead of planets: the title
+# "5 Bright Planets to Spot in November" searched the editorial words
+# "Bright"/"Spot"/"November" and got a town called Bright (twice), a movie
+# premiere named Bright and three places named "Spot" — while the history
+# default facets appended "temple"/"palace" to a planets query.
+SPACE_TITLE = "5 Bright Planets to Spot in November – When & Where"
+
+
+def test_domain_picks_the_storys_own_vocabulary():
+    assert images._domain(SPACE_TITLE) == "space"
+    assert images._domain("The Sargasso Sea Cradles Eels and Turtles") == "sea"
+    assert images._domain("Chittorgarh: 3 Sieges, 3 Jauhar") == "history"
+    assert images._domain("Google Tests AI Shopping With Flipkart") == "tech"
+
+
+def test_space_title_never_searches_editorial_noise():
+    qs = images.build_queries(SPACE_TITLE)
+    words = [w.lower() for q in qs for w in q.split()]
+    for noise in ("bright", "spot", "november"):
+        assert noise not in words
+    # and a space story gets space facets, never the history default
+    for bad in ("temple", "palace", "fort"):
+        assert bad not in words
+    assert images._keywords(SPACE_TITLE) == ["Planets"]
+
+
+def test_relevant_rejects_the_actual_garbage_from_the_first_space_run():
+    keys = images._keywords(SPACE_TITLE)
+    for title in (
+        "1 bright victoria aerial panorama 2018.jpg",
+        "Spot where Maurice Bishop was executed at Fort Rupert, Grenada.jpg",
+        "Bright Japan Premiere Red Carpet.jpg",
+        "Bright Old Post Office 001.JPG",
+    ):
+        c = images._Candidate(url="https://x/a.jpg", title=title)
+        assert not images._relevant(c, keys, domain="space"), title
+
+
+def test_relevant_accepts_a_sibling_planet_picture():
+    """Pure word overlap would reject 'Jupiter and Saturn…' for a 'Planets'
+    story — the domain pass keeps the genre on screen without opening the
+    gate to the town of Bright."""
+    keys = images._keywords(SPACE_TITLE)
+    c = images._Candidate(
+        url="https://x/a.jpg",
+        title="Jupiter and Saturn conjunction in the night sky.jpg")
+    assert images._relevant(c, keys, domain="space")
+
+
+def test_sea_title_uses_sea_vocabulary_not_editorial_words():
+    qs = images.build_queries(
+        "The Sargasso Sea: A Shoreless Ocean That Cradles Eels and Turtles")
+    words = [w.lower() for q in qs for w in q.split()]
+    assert "sargasso" in words
+    assert not any(w in words for w in ("shoreless", "cradles"))
+    # subtitle mining keeps the domain's own nouns
+    assert "turtles" in [w.lower() for w in images._keywords(
+        "The Sargasso Sea: A Shoreless Ocean That Cradles Eels and Turtles")]
+
+
+def test_an_all_noise_title_still_gets_domain_queries():
+    """Nothing searchable left → the gate still holds pictures to the
+    domain's vocabulary instead of passing everything through."""
+    qs = images.build_queries("Bright November Spot")
+    assert qs
+    words = [w.lower() for q in qs for w in q.split()]
+    assert not {"bright", "november", "spot"} & set(words)
+
+
 def test_collect_dedupes_and_keeps_order(monkeypatch):
     monkeypatch.setattr(images, "article_images", lambda *a, **kw: [
         images._Candidate(url="https://x/a.jpg", score=100.0),
