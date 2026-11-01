@@ -278,10 +278,10 @@ def main() -> None:
     sea_switch = ('<a class="ext" style="margin-top:0" href="./index.html">'
                   '<span class="ic">📜</span>History Channel</a>')
     (site / "index.html").write_text(_page_html(
-        dash, channel_url="https://rumble.com/c/IndianHistoryOfficial",
+        dash, channel_url="https://rumble.com/c/c-7970918",
         json_name="all.json", switch_html=hist_switch))
     (site / "sea.html").write_text(_page_html(
-        dash, channel_url="https://rumble.com/c/BlueDeepFacts",
+        dash, channel_url="https://rumble.com/c/c-7980078",
         json_name="all_sea.json", switch_html=sea_switch, sea=True))
 
     print(f"static dashboard ready: {site}  "
