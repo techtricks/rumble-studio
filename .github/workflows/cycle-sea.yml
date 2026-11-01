@@ -175,7 +175,10 @@ jobs:
           MIN_NICHE_SCORE: "0"
           MIN_TOTAL_SCORE: "0.20"
           TTS_ENGINE: edge
-          CATCHUP_HOURS: "14"
+          # Manual dispatch = operator intent: run NOW regardless of when the
+          # last cycle shipped. Scheduled backup slots keep the 14h guard so
+          # they stay no-ops when the main run was clean.
+          CATCHUP_HOURS: ${{ github.event_name == 'workflow_dispatch' && '0' || '14' }}
         run: python -m ytauto run --cycles 1
 
       - name: Publish to Rumble (longform + shorts rendered this cycle)

@@ -188,7 +188,10 @@ jobs:
           TTS_ENGINE: edge
           # Backup-schedule failover: a backup cron never double-posts — it
           # only works when the main run missed/failed (no clean cycle in 14h).
-          CATCHUP_HOURS: "14"
+          # Manual dispatch = operator intent: run NOW regardless of when the
+          # last cycle shipped. Scheduled backup slots keep the 14h guard so
+          # they stay no-ops when the main run was clean.
+          CATCHUP_HOURS: ${{ github.event_name == 'workflow_dispatch' && '0' || '14' }}
         run: python -m ytauto run --cycles 1
 
       - name: Publish to Rumble (longform + shorts rendered this cycle)
