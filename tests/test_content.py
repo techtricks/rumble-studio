@@ -118,6 +118,66 @@ def test_title_b_threshold_documented_limitation():
     assert V.check_title_b(b, a) == []
 
 
+def test_shout_rule_forgives_proper_noun_acronyms():
+    """Astronomy/history titles are MADE of caps proper nouns (NASA, JWST,
+    TRAPPIST-1). The old 4-letter rule flagged every one of them, which killed
+    the space channel's first video before it could render."""
+    assert V.check_title("JWST Finds No Atmosphere on TRAPPIST‑1b") == []
+    assert V.check_title("NASA, ESA and JAXA Share One Sky") == []
+    assert V.check_title("OSIRIS-REx Brought Asteroid Bits Home") == []
+    assert V.check_title("How LIGO Felt a Ripple 1.3 Billion Years Old") == []
+
+
+def test_shout_rule_still_catches_real_shouting():
+    """Loosened for acronyms, NOT for yelling: curated yell words always
+    count, and 3+ stacked acronym-length caps is unmistakably shouting."""
+    assert "title contains an ALL-CAPS word" in V.check_title(
+        "THIS IS THE TRUTH About Mars")
+    assert "title contains an ALL-CAPS word" in V.check_title(
+        "NASA SPACEX AND ESA ALL FAILED Today")
+    assert "title contains an ALL-CAPS word" in V.check_title(
+        "BREAKING: JWST Found Something On TRAPPIST‑1b")
+
+
+def test_repair_title_fixes_the_space_channel_killer():
+    """The exact title that produced 0 published videos on the first space
+    cycle: 72 chars + two acronyms. Repair keeps the headline, drops the
+    tail, and the result passes every title gate."""
+    bad = "JWST Finds No Atmosphere on TRAPPIST‑1b – What It Means for Habitability"
+    fixed = V.repair_title(bad)
+    assert fixed == "JWST Finds No Atmosphere on TRAPPIST‑1b"
+    assert len(fixed) <= 70
+    assert V.check_title(fixed) == []
+
+
+def test_repair_title_lowercases_yell_words_only():
+    fixed = V.repair_title("BREAKING: NASA Finds Water On Mars")
+    assert fixed == "breaking: NASA Finds Water On Mars"
+    # proper nouns keep their caps, short titles are untouched
+    assert V.repair_title("Mars Water Found") == "Mars Water Found"
+
+
+def test_repair_title_word_trims_without_a_segment():
+    """No dash/colon to cut at → trim whole words, never mid-word."""
+    fixed = V.repair_title(
+        "The Complete Story Of The Voyager Spacecraft Long Goodbye Journey",
+        max_len=30)
+    assert len(fixed) <= 30
+    assert not fixed.endswith(" ")
+    assert V.check_title(fixed, max_len=30) == []
+
+
+def test_repair_title_forces_a_different_b_variant():
+    """segment=False (the A/B repair path) must produce a different cut when
+    both variants would otherwise converge on the same prefix."""
+    a = V.repair_title(
+        "JWST Finds No Atmosphere on TRAPPIST‑1b – What It Means for Habitability")
+    b = V.repair_title(
+        "JWST Finds No Atmosphere on TRAPPIST‑1b – And Why It Still Matters For Everyone",
+        segment=False)
+    assert a != b
+
+
 def test_description_needs_enough_substance():
     assert V.check_description("too short")
     good = "A" * 100 + " https://example.com/source"

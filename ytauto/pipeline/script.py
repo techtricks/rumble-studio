@@ -22,7 +22,7 @@ from ..llm import LLM, get_llm
 from ..logging_setup import get_logger
 from ..sources.article import enrich, needs_enrichment
 from ..util import clip, humanize_duration
-from ..validate import validate_package
+from ..validate import check_title_b, repair_title, validate_package
 
 log = get_logger("pipeline.script")
 
@@ -93,26 +93,51 @@ def script_topic(
     )
 
     target_s = s.shorts_target_s if kind == "shorts" else s.longform_target_s
-    errors, warnings = validate_package(
-        kind=kind,
-        title=meta.title,
-        title_b=meta.title_b,
-        description=meta.description,
-        tags=meta.tags,
-        script=script.text,
-        thumbnail_plan=meta.thumbnail_plan,
-        research={
-            "angle": research.angle,
-            "key_facts": research.key_facts,
-            "confidence": research.confidence,
-        },
-        chapters=meta.chapters,
-        max_title_len=55 if kind == "shorts" else s.title_max_len,
-        niche_terms=s.niche_terms,
-        target_s=target_s,
-        wpm=s.words_per_minute,
-        source_url=tdict.get("url"),
-    )
+    max_title_len = 55 if kind == "shorts" else s.title_max_len
+
+    def _validate() -> Tuple[List[str], List[str]]:
+        return validate_package(
+            kind=kind,
+            title=meta.title,
+            title_b=meta.title_b,
+            description=meta.description,
+            tags=meta.tags,
+            script=script.text,
+            thumbnail_plan=meta.thumbnail_plan,
+            research={
+                "angle": research.angle,
+                "key_facts": research.key_facts,
+                "confidence": research.confidence,
+            },
+            chapters=meta.chapters,
+            max_title_len=max_title_len,
+            niche_terms=s.niche_terms,
+            target_s=target_s,
+            wpm=s.words_per_minute,
+            source_url=tdict.get("url"),
+        )
+
+    errors, warnings = _validate()
+    if errors and any(e.startswith("title") for e in errors):
+        # Any title error → one DETERMINISTIC repair, never a second LLM call
+        # (Groq's free tier is ~20 generate calls/day). The space niche died
+        # here on "JWST Finds No Atmosphere on TRAPPIST‑1b…" — proper-noun
+        # acronyms flagged as shouting and 72 chars as over-long — and
+        # history had lost 4 videos to the same rule. Non-title errors are
+        # untouched: if anything still fails after the repair, the honest
+        # reject below runs exactly as before.
+        fixed_a = repair_title(meta.title, max_len=max_title_len)
+        fixed_b = (repair_title(meta.title_b, max_len=max_title_len)
+                   if meta.title_b else meta.title_b)
+        if fixed_b and check_title_b(fixed_b, fixed_a):
+            # Both variants cut to the same prefix — re-cut B by words so
+            # it stays a real alternative to A.
+            fixed_b = repair_title(meta.title_b, max_len=max_title_len,
+                                   segment=False)
+        if (fixed_a, fixed_b) != (meta.title, meta.title_b):
+            log.info("title repaired: %r -> %r", meta.title, fixed_a)
+            meta.title, meta.title_b = fixed_a, fixed_b
+            errors, warnings = _validate()
 
     est_s = int(script.word_count / max(1, s.words_per_minute) * 60)
     duration_s = _duration_s(est_s, kind)

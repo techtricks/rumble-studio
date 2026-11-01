@@ -29,8 +29,35 @@ _CLICKS = (
 )
 _BAIT = ("?", "!", "...", "→", "->", "|", "🔥", "💥", "😱", "🚀")
 _CLICKS_YOUTUBE = ("click here", "link in description", "subscribe now", "smash that")
-# ALL-CAPS words of 4+ letters read as shouting in a title.
-_SHOUT = re.compile(r"\b[A-Z]{4,}\b")
+# ALL-CAPS words read as shouting in a title — with two corrections the old
+# 4-letter rule got wrong, both fatal for a space/astronomy niche: proper-noun
+# acronyms (NASA, JWST, TRAPPIST-1, OSIRIS-REx) are naming, not shouting, and
+# one lone yell word beats a pile of acronyms. A curated yell word always
+# counts; any OTHER all-caps token of 4+ letters only counts when the title
+# stacks 3+ of them — that is unmistakably yelling, not a list of agencies.
+_YELL = frozenset({
+    "BREAKING", "EXCLUSIVE", "WARNING", "URGENT", "SHOCKING", "SHOCKED",
+    "SECRET", "TRUTH", "LIVE", "EXPOSED", "REVEALED", "LEAKED",
+    "BOMBSHELL", "INSANE", "CRAZY", "EPIC", "MUST", "SEE", "WATCH",
+    "REAL", "FAKE", "HOAX", "SCAM", "CLICK", "SUBSCRIBE", "TODAY",
+    "NOW", "NEVER", "EVER", "BEST", "WORST", "ACTUAL", "HIDDEN",
+})
+_ACRO_LEN = 4      # below this, caps like "AI"/"GPS" are acronyms, never shouts
+_ACRO_SHOUT = 3    # 3+ proper-noun-looking caps in one title = yelling
+
+
+def _shout_words(t: str) -> List[str]:
+    """The ALL-CAPS tokens that make `t` look like shouting (see above)."""
+    words: List[str] = []
+    for w in re.findall(r"[A-Z][A-Z0-9'’-]*", t):
+        w = w.strip("'’-")
+        if w.isupper() and len(w) >= 3:
+            words.append(w)
+    hits = [w for w in words if w in _YELL]
+    acronyms = [w for w in words if w not in _YELL and len(w) >= _ACRO_LEN]
+    if len(acronyms) >= _ACRO_SHOUT:
+        hits.extend(acronyms)
+    return hits
 _EMOJI = re.compile(
     "[\U0001F300-\U0001FAFF\U00002600-\U000027BF\U0001F1E6-\U0001F1FF]"
 )
@@ -73,15 +100,16 @@ def check_title(
         problems.append(f"clickbait phrasing: {', '.join(sorted(set(hits))[:3])}")
     if any(b in t for b in _BAIT):
         problems.append("title contains an emoji or arrow/pipe gimmick")
-    if _SHOUT.search(t):
+    if _shout_words(t):
         problems.append("title contains an ALL-CAPS word")
     if _EMOJI.search(t):
         problems.append("title contains an emoji")
-    # No aggregate uppercase-ratio check here. `_SHOUT` already catches real
-    # shouting at 4+ letters, and a ratio test cannot tell "COMPLETELY SHOUTING"
-    # from the "AI"/"GPU"/"TPU" acronyms that a tech channel title is made of —
-    # in this niche it rejected titles like "Nvidia's New GPU Runs AI Four Times
-    # Faster", which is exactly the kind of title we want.
+    # No aggregate uppercase-ratio check here. `_shout_words` already catches
+    # real shouting (curated yell words, or 3+ stacked acronyms), and a ratio
+    # test cannot tell "COMPLETELY SHOUTING" from the "AI"/"GPU"/"TPU"
+    # acronyms that a tech channel title is made of — in this niche it
+    # rejected titles like "Nvidia's New GPU Runs AI Four Times Faster",
+    # which is exactly the kind of title we want.
     if t.count("?") > 1:
         problems.append("more than one question mark")
     if t != t.strip(" -–—|:•"):
@@ -102,6 +130,45 @@ def check_title_b(title_b: str, title_a: str) -> List[str]:
     if a and len(a & b) / max(1, len(a | b)) > 0.7:
         return ["title_b is too similar to title (Jaccard > 0.7) — not a real variant"]
     return []
+
+
+def repair_title(title: str, *, max_len: int = 70, segment: bool = True) -> str:
+    """Deterministically fix a shouty or over-long title — no LLM call.
+
+    Groq's free tier allows ~20 generate calls a day, so spending a second
+    call just to reword a title would eat a whole video's budget. Order:
+    collapse whitespace, lowercase the curated yell words (proper nouns —
+    NASA, JWST, TRAPPIST — are untouched), then cut length: first at a
+    segment boundary (em dash / en dash / pipe / colon / hyphen), else
+    whole words from the end. `segment=False` forces the word trim, which
+    the A/B repair path uses so variant B stays a real alternative after
+    both variants got cut to the same prefix.
+    """
+    t = " ".join((title or "").split())
+    if not t:
+        return t
+
+    def _lc(m: "re.Match[str]") -> str:
+        word = m.group(0).strip("'’-")
+        return m.group(0).lower() if word in _YELL else m.group(0)
+
+    t = re.sub(r"\b[A-Z][A-Z0-9'’-]*\b", _lc, t)
+    if len(t) <= max_len:
+        return t
+    if segment:
+        for sep in (" – ", " — ", " | ", ": ", " - "):
+            head = t.split(sep)[0].strip(" -–—|:•")
+            # A segment only wins if it reads as a headline in its own
+            # right; a fragment like "Mars:" falls through to the word trim.
+            if 20 <= len(head) <= max_len:
+                return head
+    out: List[str] = []
+    for w in t.split():
+        if len(" ".join(out + [w])) > max_len:
+            break
+        out.append(w)
+    cut = " ".join(out).strip(" -–—|:•")
+    return cut or t[:max_len].strip(" -–—|:•")
 
 
 def check_description(

@@ -122,6 +122,44 @@ def test_rss_skips_items_without_a_title(monkeypatch):
     assert rss.RssSource(["https://example.com/feed"]).harvest(5) == []
 
 
+# NASA Science feed ka exact malformation: root <rss> tag par hi ek attribute
+# value `"` se close hua aur agle attribute ka space gayab —
+# xmlns:apod="…/"xmlns:media="…". feedparser ki salvage parser bhi ispar
+# girti hai (bozo + 0 entries), so poora feed drop ho jata tha — 10 stories
+# ek cycle me gayab. Verified against the live feed (0 entries before,
+# 10 after).
+NASA_BROKEN = b'''<?xml version="1.0" encoding="UTF-8"?><rss version="2.0"
+\txmlns:content="http://purl.org/rss/1.0/modules/content/"
+\txmlns:atom="http://www.w3.org/2005/Atom"
+\txmlns:apod="https://science.nasa.gov/apod/"xmlns:media="http://search.yahoo.com/mrss/" >
+<channel>
+\t<title>NASA Science</title>
+\t<item>
+\t\t<title>APOD: Colors of the Moon</title>
+\t\t<link>https://science.nasa.gov/apod/20261101</link>
+\t\t<description><![CDATA[<p>The Moon, in colour.</p>]]></description>
+\t</item>
+</channel>
+</rss>'''
+
+
+def test_rss_repairs_a_missing_space_between_attributes(monkeypatch):
+    """A `"` immediately followed by `name=` cannot be a closing quote — it
+    is a feed writer that forgot the space. Insert it and retry once, so the
+    NASA feed's 10 stories are not silently lost every cycle."""
+    _stub_get(monkeypatch, NASA_BROKEN)
+    out = rss.RssSource(["https://example.com/feed"]).harvest(limit=10)
+    assert [t.title for t in out] == ["APOD: Colors of the Moon"]
+
+
+def test_rss_attr_fix_leaves_well_formed_feeds_untouched():
+    """The rewrite only fires on feeds that failed to parse, and even then
+    only touches `"` + `name=` — CDATA bodies, URLs and normal attributes
+    (where the quote is followed by a value or space) stay byte-identical."""
+    assert rss._attr_quote_fix(FEED.encode()) == FEED.encode()
+    assert rss._attr_quote_fix("plain text") == "plain text"
+
+
 @pytest.mark.parametrize("status", [404, 429, 500, 503])
 def test_fetch_raises_a_source_error(monkeypatch, status):
     """`fetch` is the strict layer: it raises rather than guessing."""

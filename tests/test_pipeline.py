@@ -213,6 +213,33 @@ def test_a_successful_script_marks_the_topic_used(db, monkeypatch):
     assert db.get_topic(topic_id)["status"] == "used"
 
 
+def test_a_title_validation_failure_is_repaired_not_rejected(db, monkeypatch):
+    """The exact failure that made the space channel's first cycle publish 0
+    videos: a proper-noun-heavy title over the char limit. The script stage
+    must deterministically repair it (no LLM retry) and keep the video —
+    while non-title errors still reject as before."""
+    monkeypatch.setenv("ALLOW_DEGRADED", "1")
+    real = script_stage.write_metadata
+
+    def _bad_meta(kind, tdict, research, script, **kw):
+        m = real(kind, tdict, research, script, **kw)
+        m.title = ("JWST Finds No Atmosphere on TRAPPIST‑1b – "
+                   "What It Means for Habitability")   # 72 chars
+        m.title_b = "No Air On TRAPPIST‑1b Says JWST After Years Of Watching"
+        return m
+
+    monkeypatch.setattr(script_stage, "write_metadata", _bad_meta)
+    _seed(db, 1)
+    topic_id = db.top_topics(limit=1)[0]["id"]
+    result = script_stage.script_topic(topic_id, db=db)
+
+    assert result.status == "scripted"
+    row = db.get_video(result.video_id)
+    assert row["title"] == "JWST Finds No Atmosphere on TRAPPIST‑1b"
+    assert len(row["title"]) <= 70
+    assert db.get_topic(topic_id)["status"] == "used"
+
+
 def test_rescore_reapplies_the_current_niche(db):
     """Changing NICHE in .env must actually change stored scores."""
     _seed(db, 1)

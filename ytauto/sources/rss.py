@@ -6,6 +6,7 @@ is thin: fetch bytes -> hand to feedparser -> map entries to `Topic`.
 
 from __future__ import annotations
 
+import re
 from typing import Any, Dict, List, Optional
 
 from ..logging_setup import get_logger
@@ -43,6 +44,19 @@ class RssSource(Source):
                 log.warning("feed skipped %s: %s", url, exc)
                 continue
             parsed = feedparser.parse(raw)
+            if parsed.bozo and not parsed.entries:
+                # Real feeds ship malformations feedparser rejects: NASA's
+                # science feed writes an attribute value closed with `"` right
+                # before the next attribute (…apod/"xmlns:media=…) — a missing
+                # space that raises "not well-formed" and used to cost the
+                # whole feed. A `"` immediately followed by `name=` can only be
+                # that bug (well-formed XML always has whitespace, `>` or `/`
+                # after a closing quote), so insert the space and retry ONCE.
+                # Runs only on feeds that failed to parse, so well-formed
+                # documents — including CDATA bodies — are never touched.
+                fixed = _attr_quote_fix(raw)
+                if fixed != raw:
+                    parsed = feedparser.parse(fixed)
             if parsed.bozo and not parsed.entries:
                 log.warning("feed unparseable %s: %s", url, parsed.get("bozo_exception", ""))
                 continue
@@ -104,6 +118,22 @@ def _host(url: str) -> str:
         return (urlparse(url).hostname or "").replace("www.", "")
     except Exception:  # pragma: no cover - malformed URL
         return ""
+
+
+# A `"` directly followed by `name=` cannot be a closing quote (XML requires
+# whitespace, `>` or `/` after it) — it is always a writer that forgot the
+# space between two attributes.
+_BROKEN_ATTR = re.compile(rb'"(?=[A-Za-z_][A-Za-z0-9_.:-]*=)')
+_BROKEN_ATTR_S = re.compile(r'"(?=[A-Za-z_][A-Za-z0-9_.:-]*=)')
+
+
+def _attr_quote_fix(raw: Any) -> Any:
+    """Insert the space a feed writer forgot after a `"` before `name=`."""
+    if isinstance(raw, (bytes, bytearray)):
+        return _BROKEN_ATTR.sub(b'" ', bytes(raw))
+    if isinstance(raw, str):
+        return _BROKEN_ATTR_S.sub('" ', raw)
+    return raw
 
 
 def _summary(entry: Dict[str, Any]) -> str:
