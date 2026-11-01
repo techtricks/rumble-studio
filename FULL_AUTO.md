@@ -55,13 +55,22 @@ sudo pmset -a displaysleep 10      # screen sleep theek hai
 - Repo: https://github.com/techtricks/rumble-studio (public; secrets me keys — code me nahi)
 - Roz **2:30 AM IST** pe (US shaam peak se pehle): research → script → Edge-TTS render → Rumble publish (longform + short)
 - Live run dekho: repo → Actions tab → latest run
-- Manual run karo: Actions → ytauto-cycle → Run workflow (dry_run option bhi hai)
+- Manual run karo: Actions → ytauto-cycle → Run workflow (dry_run option bhi hai — rehearsal me publish bilkul NAHI hota)
 - **Mac pe launchd + CI dono ON = DUPLICATE videos!** CI go-live ke baad launchd bandido:
   ```bash
   launchctl unload ~/Library/LaunchAgents/com.ytauto.rumble.plist
   ```
 - CI Cloudflare pe atke to: Mac pe `python -m ytauto rumble` chalake manual push kar do
 
+## 🌊 Doosra channel — Sea / Underwater Life (BlueDeepFacts)
+- Channel: https://rumble.com/c/c-7980078 (dashboard: https://rumblechannel.netlify.app/sea.html)
+- Apna workflow: `.github/workflows/cycle-sea.yml` — roz **5:53 PM IST** + backup **11:53 PM IST** (history cycle se 9 ghante door, isliye Groq/runners kabhi nahi takrayenge)
+- Alag state DB (`ytauto-state-sea`) — sea ke topics/history/history ke topics alag rehte hain
+- Manual run: Actions → **ytauto-cycle-sea** → Run workflow (`dry_run=true` = sirf rehearsal, publish NAHI hota)
+- Channel ka naam secret `RUMBLE_CHANNEL_SEA` me hai — badalna ho to: `gh secret set RUMBLE_CHANNEL_SEA`
+- Agar secret delete ho jaye toh cycle CHUP-CHAP chhod deti hai (galat channel par video jaane se pehle ruk jati hai)
+
 ## Safety rails jo ON hain
 - AUTO_APPROVE=1 lekin: research-confidence, niche (Indian + world history — battles/empires), duplicate & originality gates ke bina script auto-publish NAHI hota
 - 6cc/CC-license images only, rotating voices — monetisation-safe defaults
+- `DRY_RUN=1` par Rumble upload chhod deta hai (CLI `--force` se override)
