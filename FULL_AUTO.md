@@ -63,7 +63,7 @@ sudo pmset -a displaysleep 10      # screen sleep theek hai
 - CI Cloudflare pe atke to: Mac pe `python -m ytauto rumble` chalake manual push kar do
 
 ## 🌊 Doosra channel — Sea / Underwater Life (BlueDeepFacts)
-- Channel: https://rumble.com/c/c-7980078 (dashboard: https://rumblechannel.netlify.app/sea.html)
+- Channel: https://rumble.com/c/c-7980078 (dashboard: https://rumblechannel.netlify.app/blue.html — "Blue Deep Facts" page, sidebar se History Facts page par switch kar sakte ho)
 - Apna workflow: `.github/workflows/cycle-sea.yml` — roz **5:53 PM IST** + backup **11:53 PM IST** (history cycle se 9 ghante door, isliye Groq/runners kabhi nahi takrayenge)
 - Alag state DB (`ytauto-state-sea`) — sea ke topics/history/history ke topics alag rehte hain
 - Manual run: Actions → **ytauto-cycle-sea** → Run workflow (`dry_run=true` = sirf rehearsal, publish NAHI hota)

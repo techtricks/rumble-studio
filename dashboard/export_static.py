@@ -3,9 +3,10 @@
 
 The local dashboard at 127.0.0.1:8600 needs this Mac. The online one does
 not: this script bakes the exact same UI into a folder of plain files —
-  index.html   the dashboard page (frontend reads ./all.json instead of /api)
-  all.json     the same payload as the local server's /api/all
-  media/       every thumbnail that exists locally
+  index.html    History Facts channel page (frontend reads ./all.json)
+  blue.html     Blue Deep Facts channel page (reads ./all_blue.json)
+  all*.json     the same payload as the local server's /api/all?ch=…
+  media/        every thumbnail that exists locally
 
 GitHub Actions runs this after every cycle (and on a 30-minute timer) and
 pushes the folder to Netlify, so the user can open the dashboard from any
@@ -26,7 +27,7 @@ sys.path.insert(0, str(ROOT))
 sys.path.insert(0, str(ROOT / "dashboard"))
 
 
-def _status(db_path: "Path | None" = None) -> dict:
+def _status(db_path: "Path | None" = None, ch: str = "history") -> dict:
     """Cloud-flavoured /api/status: the DB is the synced CI one."""
     import dashboard as dash
     import ci_sync
@@ -36,9 +37,10 @@ def _status(db_path: "Path | None" = None) -> dict:
     # at startup (its __main__ block). Bind it here the same way.
     dash.ci_sync = ci_sync
 
-    s = dash.api_status(db_path)
+    s = dash.api_status(db_path, ch=ch)
     ci = run_status()
-    gh_runs = ci.get("runs") or []
+    # this channel's workflow only — a history run is not the sea channel's
+    gh_runs = dash.channel_runs(ch, ci.get("runs") or [])
     active = [r for r in gh_runs if r.get("status") in ("in_progress", "queued")]
     # On any static host there is no local process to probe: the cycle badge
     # is driven purely by GitHub Actions.
@@ -48,7 +50,7 @@ def _status(db_path: "Path | None" = None) -> dict:
     heartbeat = None
     for r in gh_runs:
         if r.get("status") == "completed":
-            heartbeat = {"last_start": (r.get("created_at") or "")[:19],
+            heartbeat = {"last_start": (r.get("started_at") or "")[:19],
                          "last_end": (r.get("updated_at") or "")[:19]}
             break
     s["heartbeat"] = heartbeat
@@ -178,29 +180,22 @@ _LOGOUT_HTML = (' <a class="ext lo-gap lo" href="/__dash_logout" '
                 'password maangega.&quot;)"><span class="ic">🚪</span>Logout</a>')
 
 
-def _page_html(dash, *, channel_url: str, json_name: str, switch_html: str,
-               sea: bool = False) -> str:
-    """The shared PAGE template, pointed at a static snapshot."""
-    phtml = dash.PAGE.replace("{{CHANNEL}}", channel_url)
+def _page_html(dash, *, ch: str, json_name: str) -> str:
+    """The shared PAGE template, coloured for one channel, on a snapshot."""
     # static reads: all*.json instead of /api; the rebuild timer (Actions)
     # refreshes the fact, the page just keeps itself modern on the screen.
-    phtml = phtml.replace("fetch('/api/all')", f"fetch('./{json_name}')")
-    # logout (edge-gate cookie kill, confirm-guarded) + channel switcher,
-    # both living in the sidebar slot after the Rumble Channel link.
-    phtml = phtml.replace('<span class="lo-slot">{{LOGOUT}}</span>',
-                          switch_html + _LOGOUT_HTML)
+    phtml = dash.render_page(
+        ch,
+        logout=_LOGOUT_HTML,                       # edge-gate cookie kill
+        href_hist="./index.html",                  # sidebar channel switcher
+        href_blue="./blue.html",
+        api_json=f"'./{json_name}'")
     phtml = phtml.replace(
         "refresh(); setInterval(refresh, 5000);",
         "refresh(); setInterval(() => location.reload(), 240000);")
     phtml = phtml.replace(
         "server down? dashboard.py start karo",
         "snapshot unavailable (all.json missing?) — Actions deploy dekho")
-    if sea:
-        phtml = phtml.replace(
-            "<title>Rumble Studio — Indian History pipeline</title>",
-            "<title>Rumble Studio — Ocean channel</title>")
-        phtml = phtml.replace("<small>Indian History · Auto videos</small>",
-                              "<small>Ocean · Underwater life</small>")
     return phtml.replace("</body>", _IDLE_JS, 1)
 
 
@@ -249,44 +244,40 @@ def main() -> None:
     (site / "all.json").write_text(
         json.dumps(_payload(status, videos, topics, settings), default=str))
 
-    # ---------- sea channel: sea.html + all_sea.json ----------
+    # ---------- blue channel: blue.html + all_blue.json ----------
     # The sea pipeline is newer than the dashboard: before its FIRST cycle
     # finishes there is no ytauto_sea.db at all. That is not an error — the
-    # ocean page then shows an honest empty state and fills in on the next
-    # build after the first sea cycle persists its state artifact.
-    sea_videos: list = []
-    sea_topics: list = []
-    sea_status = status
+    # Blue Deep Facts page then shows an honest empty state (never history's
+    # numbers borrowed) and fills in on the next build after the first sea
+    # cycle persists its state artifact.
+    blue_videos: list = []
+    blue_topics: list = []
+    blue_status = _status(ch="blue")
     if SEA_DB.exists():
-        sea_videos = dash.api_videos(SEA_DB)
-        sea_topics = dash.api_topics(SEA_DB)
-        sea_status = _status(SEA_DB)
-        sea_copied = _media([v.get("thumb") or "" for v in sea_videos], site)
-        for v in sea_videos:
-            if v.get("thumb") and v["thumb"] not in sea_copied:
+        blue_videos = dash.api_videos(SEA_DB)
+        blue_topics = dash.api_topics(SEA_DB)
+        blue_copied = _media([v.get("thumb") or "" for v in blue_videos], site)
+        for v in blue_videos:
+            if v.get("thumb") and v["thumb"] not in blue_copied:
                 v["thumb"] = None
     else:
-        print("[sea] no data/ci/ytauto_sea.db yet — ocean page ships empty "
-              "until the first sea cycle persists its state")
-    (site / "all_sea.json").write_text(
-        json.dumps(_payload(sea_status, sea_videos, sea_topics, settings),
+        print("[blue] no data/ci/ytauto_sea.db yet — Blue Deep Facts ships "
+              "empty until the first sea cycle persists its state")
+    (site / "all_blue.json").write_text(
+        json.dumps(_payload(blue_status, blue_videos, blue_topics, settings),
                    default=str))
 
-    # ---------- pages + sidebar cross-links ----------
-    hist_switch = ('<a class="ext" style="margin-top:0" href="./sea.html">'
-                   '<span class="ic">🌊</span>Ocean Channel</a>')
-    sea_switch = ('<a class="ext" style="margin-top:0" href="./index.html">'
-                  '<span class="ic">📜</span>History Channel</a>')
-    (site / "index.html").write_text(_page_html(
-        dash, channel_url="https://rumble.com/c/c-7970918",
-        json_name="all.json", switch_html=hist_switch))
-    (site / "sea.html").write_text(_page_html(
-        dash, channel_url="https://rumble.com/c/c-7980078",
-        json_name="all_sea.json", switch_html=sea_switch, sea=True))
+    # ---------- pages: the shared template, once per channel ----------
+    # The sidebar channel switcher (History Facts ↔ Blue Deep Facts) is part
+    # of the template now, so there is nothing extra to stitch in here.
+    (site / "index.html").write_text(
+        _page_html(dash, ch="history", json_name="all.json"))
+    (site / "blue.html").write_text(
+        _page_html(dash, ch="blue", json_name="all_blue.json"))
 
     print(f"static dashboard ready: {site}  "
-          f"(history: {len(videos)} videos / {len(topics)} topics | "
-          f"sea: {len(sea_videos)} videos / {len(sea_topics)} topics)")
+          f"(History Facts: {len(videos)} videos / {len(topics)} topics | "
+          f"Blue Deep Facts: {len(blue_videos)} videos / {len(blue_topics)} topics)")
 
 
 if __name__ == "__main__":

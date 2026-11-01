@@ -4,8 +4,10 @@
 No extra dependencies: stdlib http.server + sqlite3 + the project's existing
 logs/database. Serves:
 
-  /            dashboard page (dark neon theme, auto-refresh every 5 s)
-  /api/*       JSON snapshots (status, videos, topics, runs, logs, settings)
+  /            History Facts channel page (dark neon theme, auto-refresh)
+  /blue        Blue Deep Facts channel page — same app, own state DB
+  /api/*       JSON snapshots (status, videos, topics, runs, logs, settings);
+               ?ch=history|blue picks the channel (default history)
   /media/*     rendered thumbnails (jpg/png) straight from data/media/
 
 Cards are clickable: clicking e.g. "failed" opens the Videos view filtered to
@@ -24,19 +26,93 @@ import subprocess
 import time
 from http.server import BaseHTTPRequestHandler, ThreadingHTTPServer
 from pathlib import Path
+from urllib.parse import parse_qs, urlparse
 
 ROOT = Path(__file__).resolve().parent.parent
 DB = ROOT / "data" / "ytauto.db"
 CI_DB = ROOT / "data" / "ci" / "ytauto.db"   # synced from GitHub Actions
+SEA_DB = ROOT / "data" / "ci" / "ytauto_sea.db"  # sea channel's synced state
 LOG = ROOT / "data" / "logs" / "launchd.log"
 ENV = ROOT / ".env"
 MEDIA = ROOT / "data" / "media"
 PORT = 8600
 
+# The TWO channels this one dashboard serves. Each gets its own page —
+# locally / (History Facts) and /blue (Blue Deep Facts), on Netlify
+# index.html and blue.html — and reads its own state DB, but the app, the
+# theme and this file stay shared: no second dashboard anywhere.
+CHANNELS: dict[str, dict] = {
+    "history": {
+        "name": "History Facts",
+        "logo": "📜",
+        "sub": "Indian History · Auto videos",
+        "url": "https://rumble.com/c/c-7970918",
+        "db": None,                      # None → active_db() (CI sync wins)
+        "schedule": "roz 2:30 AM IST (+ 9:00 AM IST backup-sirf-fail-par)",
+        "dbfile": "data/ytauto.db",
+        "media": "data/media/",
+        "log": "data/logs/launchd.log",
+        "logs_label": "data/logs/launchd.log — scheduler ka poora output, har 5s refresh",
+        "policy": "• Indian + world history topics (curated sources: "
+                  "LiveHistoryIndia, Ancient Origins, r/IndianHistory, "
+                  "worldhistory.org)<br>",
+    },
+    "blue": {
+        "name": "Blue Deep Facts",
+        "logo": "🌊",
+        "sub": "Ocean · Underwater life",
+        "url": "https://rumble.com/c/c-7980078",
+        "db": SEA_DB,                    # synced from ytauto-state-sea
+        "schedule": "roz 5:53 PM IST (+ 11:53 PM IST backup)",
+        "dbfile": "data/ci/ytauto_sea.db",
+        "media": "data/media/ (CI runs)",
+        "log": "GitHub Actions · cycle-sea.yml",
+        "logs_label": "cycle-sea.yml — cloud pipeline (Mac pe kuch nahi chalta)",
+        "policy": "• Sirf ocean / underwater-life topics (sources: "
+                  "ScienceDaily Oceans, Phys.org, Ocean Conservancy, "
+                  "Smithsonian, The Conversation)<br>",
+    },
+}
+
 
 def active_db() -> Path:
     """The cloud (GitHub Actions) DB wins whenever it has synced."""
     return CI_DB if CI_DB.exists() else DB
+
+
+def ch_db(ch: str) -> "Path | None":
+    """State DB for a channel (history falls back to active_db())."""
+    return CHANNELS.get(ch, CHANNELS["history"])["db"]
+
+
+def channel_runs(ch: str, runs: list[dict]) -> list[dict]:
+    """GitHub runs belonging to this channel's workflow.
+
+    runs.json mixes ytauto-cycle, ytauto-cycle-sea and ytauto-dashboard;
+    display_title is the workflow name for scheduled/dispatched runs. The
+    sea page must never show a history cycle as its own (and vice versa) —
+    when nothing matches, history falls back to everything so a renamed
+    workflow cannot blank the card, while the sea page stays honestly empty
+    until its first cycle exists.
+    """
+    hit = [r for r in runs
+           if ("sea" in (r.get("title") or "").lower()) == (ch == "blue")]
+    if ch == "blue":
+        return hit
+    return hit or list(runs)
+
+
+def _title_key(title: str) -> str:
+    """Fuzzy key for matching Rumble-stats titles against DB titles.
+
+    tools/rumble_stats.py truncates scraped titles at 100 chars and the
+    content page sometimes re-wraps them, so exact compare is brittle.
+    """
+    return re.sub(r"\s+", " ", (title or "")).strip().lower()[:80]
+
+
+def _title_keys(titles) -> set:
+    return {_title_key(t) for t in titles if t}
 
 
 def db_rows(sql: str, args: tuple = (), *, db_path: "Path | None" = None) -> list[dict]:
@@ -81,7 +157,18 @@ def api_settings() -> dict:
     return vals
 
 
-def api_status(db_path: "Path | None" = None) -> dict:
+def _ci_status() -> dict:
+    """runs.json as last synced; empty when ci_sync never bound/ran."""
+    try:
+        return ci_sync.run_status()
+    except NameError:  # imported lazily by __main__/export_static
+        return {"synced_at": None, "runs": []}
+
+
+def api_status(db_path: "Path | None" = None, ch: str = "history") -> dict:
+    meta = CHANNELS.get(ch, CHANNELS["history"])
+    if db_path is None:
+        db_path = meta["db"]          # history: None → active_db()
     counts = {r["status"]: r["c"] for r in db_rows(
         "select status, count(*) c from videos group by status",
         db_path=db_path)}
@@ -91,28 +178,31 @@ def api_status(db_path: "Path | None" = None) -> dict:
     runs = db_rows("select * from runs order by started_at desc limit 20",
                    db_path=db_path)
     last_run = runs[0] if runs else None
-    running = _live_cycle()
 
-    # Online mode: cloud (GitHub Actions) activity drives the live badge and
-    # the heartbeat — the Mac's own cycle is of historical interest only.
-    ci = ci_sync.run_status()
-    online = CI_DB.exists()
-    if online:
-        active = [r for r in ci.get("runs") or []
-                  if r.get("status") in ("in_progress", "queued")]
-        if active:
-            running = {"running": True,
-                       "procs": [f"github-actions run #{active[0].get('number', '')}"]}
-        heartbeat = None
-        for r in ci.get("runs") or []:
+    # Cloud (GitHub Actions) drives the live badge: the sea channel only
+    # ever runs there, and a history cycle must not light up its page.
+    ci = _ci_status()
+    gh_all = ci.get("runs") or []
+    gh_runs = channel_runs(ch, gh_all)
+    running = ({"running": False, "procs": []} if ch == "blue"
+               else _live_cycle())
+    active = [r for r in gh_runs
+              if r.get("status") in ("in_progress", "queued")
+              and "dashboard" not in (r.get("title") or "").lower()]
+    if active:
+        running = {"running": True,
+                   "procs": [f"github-actions run #{active[0].get('number', '')}"]}
+
+    # heartbeat: the sea channel's clock is its workflow, history's is the
+    # launchd log (its CI runs show up in the table anyway).
+    heartbeat = None
+    if ch == "blue":
+        for r in gh_runs:
             if r.get("status") == "completed":
-                heartbeat = {"last_start": r.get("created_at"),
+                heartbeat = {"last_start": r.get("started_at"),
                              "last_end": r.get("updated_at")}
                 break
-
-    # scheduler heartbeat from the launchd log
-    heartbeat = None
-    if LOG.exists():
+    elif LOG.exists():
         text = LOG.read_text(errors="replace")
         starts = re.findall(r"=== (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) cycle start", text)
         ends = re.findall(r"=== (\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}) cycle end", text)
@@ -130,7 +220,7 @@ def api_status(db_path: "Path | None" = None) -> dict:
 
     # GitHub Actions connectivity: runs.json is rewritten every sync pass
     # (~3 min); older than 15 min means the pull is broken → offline.
-    gh_runs = ci.get("runs") or []
+    # gh_runs is already THIS channel's workflow only (see channel_runs).
     live = [r for r in gh_runs
             if r.get("status") in ("in_progress", "queued")]
     show_run = (live[0] if live else (gh_runs[0] if gh_runs else None))
@@ -156,6 +246,11 @@ def api_status(db_path: "Path | None" = None) -> dict:
 
     # Channel money+reach snapshot written by tools/rumble_stats.py (CI adds
     # the file to the state artifact; locally the checker writes data/).
+    # The FILE is account-wide (one Rumble account, two channels), so keep
+    # only this channel's rows: an explicit channel tag when the scraper
+    # added one, else title-match against the state DBs — blue gets only
+    # what the sea DB knows, history loses whatever the sea DB claims.
+    # all_time/last30/balance have no per-channel split on Rumble → flagged.
     rumble_stats = None
     for cand in (CI_DB.parent / "rumble_stats.json",
                  ROOT / "data" / "rumble_stats.json"):
@@ -164,15 +259,39 @@ def api_status(db_path: "Path | None" = None) -> dict:
                 rumble_stats = json.loads(cand.read_text())
             except (json.JSONDecodeError, OSError):
                 rumble_stats = None
-            if rumble_stats:
-                vids = rumble_stats.get("videos") or []
-                rumble_stats["monetized"] = sum(
-                    1 for v in vids if v.get("monetization") == "monetized")
-                rumble_stats["pending"] = sum(
-                    1 for v in vids if v.get("monetization") == "pending")
             break
+    if rumble_stats:
+        other_db = CI_DB if ch == "blue" else SEA_DB
+        own = _title_keys(r["title"] for r in
+                          db_rows("select title from videos", db_path=db_path))
+        other = _title_keys(r["title"] for r in db_rows(
+            "select title from videos", db_path=other_db)) if other_db.exists() else set()
+
+        def mine(entry: dict) -> bool:
+            tag = entry.get("channel")
+            if tag:
+                return tag == ch
+            key = _title_key(entry.get("title") or "")
+            if ch == "blue":
+                return key in own        # untagged → only what sea DB knows
+            return key not in other      # untagged → old history rows stay in
+
+        vids = [v for v in (rumble_stats.get("videos") or []) if mine(v)]
+        erows = [r for r in (rumble_stats.get("earnings_rows") or []) if mine(r)]
+        rumble_stats["videos"] = vids
+        rumble_stats["earnings_rows"] = erows
+        rumble_stats["monetized"] = sum(
+            1 for v in vids if v.get("monetization") == "monetized")
+        rumble_stats["pending"] = sum(
+            1 for v in vids if v.get("monetization") == "pending")
+        rumble_stats["account_totals"] = True   # all_time/last30/balance are
+                                                # account-level, not per-ch
     return {
         "now": time.strftime("%Y-%m-%d %H:%M:%S"),
+        "channel": ch,
+        "meta": {k: meta[k] for k in
+                 ("name", "logo", "sub", "url", "schedule",
+                  "dbfile", "media", "log", "logs_label")},
         "live": running,
         "heartbeat": heartbeat,
         "cycle_state": "RUNNING NOW" if running["running"] else ("idle" if heartbeat else "never run"),
@@ -189,7 +308,7 @@ def api_status(db_path: "Path | None" = None) -> dict:
         "rumble_cookies_since": cookies.exists()
         and time.strftime("%Y-%m-%d", time.gmtime(cookies.stat().st_mtime)),
         "links": {
-            "channel": "https://rumble.com/c/IndianHistoryOfficial",
+            "channel": meta["url"],
             "content": "https://rumble.com/account/content",
         },
     }
@@ -217,7 +336,15 @@ def api_topics(db_path: "Path | None" = None) -> list[dict]:
            from topics order by created_at desc limit 60""", db_path=db_path)
 
 
-def api_logs() -> dict:
+def api_logs(ch: str = "history") -> dict:
+    if ch == "blue":
+        # The sea pipeline only exists in the cloud — no launchd log here.
+        return {"lines": 0,
+                "text": "Blue Deep Facts = GitHub Actions pipeline "
+                        "(.github/workflows/cycle-sea.yml).\n"
+                        "Mac pe kuch nahi chalta, isliye yahan local log "
+                        "nahi hai.\nCloud logs:\n"
+                        "https://github.com/techtricks/rumble-studio/actions"}
     if not LOG.exists():
         return {"text": "(launchd log not created yet)", "lines": 0}
     lines = LOG.read_text(errors="replace").splitlines()
@@ -236,33 +363,41 @@ class Handler(BaseHTTPRequestHandler):
         self._send(200, "application/json", json.dumps(data).encode())
 
     def do_GET(self) -> None:  # noqa: N802 - stdlib naming
-        if self.path == "/":
-            self._send(200, "text/html", PAGE.encode())
-        elif self.path == "/api/status":
-            self._json(api_status())
-        elif self.path == "/api/videos":
-            self._json(api_videos())
-        elif self.path == "/api/topics":
-            self._json(api_topics())
-        elif self.path == "/api/logs":
-            self._json(api_logs())
-        elif self.path == "/api/settings":
+        parsed = urlparse(self.path)
+        q = parse_qs(parsed.query)
+        ch = (q.get("ch") or ["history"])[0]
+        if ch not in CHANNELS:
+            ch = "history"
+        db = ch_db(ch)
+        if parsed.path == "/":
+            self._send(200, "text/html", render_page("history").encode())
+        elif parsed.path == "/blue":
+            self._send(200, "text/html", render_page("blue").encode())
+        elif parsed.path == "/api/status":
+            self._json(api_status(ch=ch))
+        elif parsed.path == "/api/videos":
+            self._json(api_videos(db))
+        elif parsed.path == "/api/topics":
+            self._json(api_topics(db))
+        elif parsed.path == "/api/logs":
+            self._json(api_logs(ch))
+        elif parsed.path == "/api/settings":
             self._json(api_settings())
-        elif self.path.startswith("/api/all"):
+        elif parsed.path.startswith("/api/all"):
             self._json({
-                "status": api_status(),
-                "videos": api_videos(),
-                "topics": api_topics(),
-                "logs": api_logs(),
+                "status": api_status(ch=ch),
+                "videos": api_videos(db),
+                "topics": api_topics(db),
+                "logs": api_logs(ch),
                 "settings": api_settings(),
             })
-        elif self.path.startswith("/media/"):
-            f = (MEDIA / self.path[len("/media/"):]).resolve()
+        elif parsed.path.startswith("/media/"):
+            f = (MEDIA / parsed.path[len("/media/"):]).resolve()
             if f.suffix.lower() in (".jpg", ".png", ".webp") and f.exists() and MEDIA in f.parents:
                 self._send(200, "image/jpeg" if f.suffix == ".jpg" else "image/png", f.read_bytes())
             else:
                 self._send(404, "text/plain", b"no file")
-        elif self.path == "/favicon.ico":
+        elif parsed.path == "/favicon.ico":
             self._send(204, "image/x-icon", b"")
         else:
             self._send(404, "text/plain", b"not found")
@@ -271,10 +406,10 @@ class Handler(BaseHTTPRequestHandler):
         return
 
 
-PAGE = """<!doctype html>
+PAGE = r"""<!doctype html>
 <html><head><meta charset="utf-8">
 <meta name="viewport" content="width=device-width,initial-scale=1">
-<title>Rumble Studio — Indian History pipeline</title>
+<title>{{CNAME}} — Rumble Studio pipeline</title>
 <style>
   :root {
     --bg:#071312; --side:#0a1a19; --card:#0d211f; --card2:#0a1a19;
@@ -309,6 +444,12 @@ PAGE = """<!doctype html>
   .nav a.lo:hover { color:var(--red); opacity:1; background:rgba(248,113,113,.08) }
   .nav a.active { color:var(--teal2); background:linear-gradient(90deg,rgba(45,212,191,.14),rgba(45,212,191,.03));
                   border-color:var(--line2); box-shadow:inset 0 0 18px rgba(45,212,191,.08) }
+  /* channel switcher — one dashboard, two channel pages */
+  .chgrp { display:flex; flex-direction:column; gap:4px; padding-bottom:10px;
+           margin-bottom:6px; border-bottom:1px solid var(--line) }
+  .chgrp a { font-size:13.5px }
+  .chgrp a.active { background:linear-gradient(90deg,rgba(45,212,191,.16),rgba(45,212,191,.04));
+                    border-color:rgba(45,212,191,.45) }
   .nav .ext { margin-top:auto }
   .nav .lo-gap { margin-top:8px }
   .brand { display:flex; align-items:center; gap:10px; padding:6px 10px 18px }
@@ -410,13 +551,18 @@ PAGE = """<!doctype html>
   .kv dd { font-weight:600; min-width:0; overflow-wrap:anywhere; word-break:break-word }
   .view { display:none } .view.on { display:block }
   @media (max-width:860px){ .app{flex-direction:column} aside{width:100%;height:auto;position:static;
-    display:flex;overflow-x:auto} .nav{flex-direction:row} .brand{display:none} .nav .ext{margin-top:0} main{padding:18px} }
+    display:flex;overflow-x:auto} .nav{flex-direction:row} .brand{display:none} .nav .ext{margin-top:0}
+    .chgrp{flex-direction:row;border:0;margin:0;padding:0} main{padding:18px} }
 </style></head>
 <body>
 <div class="app">
   <aside>
-    <div class="brand"><div class="logo">📜</div><div><b>Rumble Studio</b><small>Indian History · Auto videos</small></div></div>
+    <div class="brand"><div class="logo">{{CLOGO}}</div><div><b>{{CNAME}}</b><small>{{CSUB}}</small></div></div>
     <nav class="nav" id="nav">
+      <div class="chgrp">
+        <a href="{{HREF_HIST}}" class="{{ON_HIST}}"><span class="ic">📜</span>History Facts</a>
+        <a href="{{HREF_BLUE}}" class="{{ON_BLUE}}"><span class="ic">🌊</span>Blue Deep Facts</a>
+      </div>
       <a data-go="dash"><span class="ic">▦</span>Dashboard</a>
       <a data-go="videos"><span class="ic">🎬</span>Videos</a>
       <a data-go="topics"><span class="ic">📚</span>Topics</a>
@@ -469,7 +615,7 @@ PAGE = """<!doctype html>
     </section>
     <!-- ============ LOGS ============ -->
     <section class="view" id="v-logs">
-      <p class="dim" style="margin-bottom:10px">data/logs/launchd.log — scheduler ka poora output, har 5s refresh</p>
+      <p class="dim" style="margin-bottom:10px">{{CLOGS}}</p>
       <pre id="logs2"></pre>
     </section>
 
@@ -477,7 +623,7 @@ PAGE = """<!doctype html>
     <section class="view" id="v-policies">
       <div class="panels">
         <div class="panel"><h3>✓ Content safety</h3>
-          <p class="note">• Sirf Indian-history topics (curated sources: LiveHistoryIndia, Ancient Origins, r/IndianHistory)<br>
+          <p class="note">{{CPOLICY}}
           • Research confidence ≥ 0.4 zaroori — thin topics kabhi script nahi hote<br>
           • Duplicate-topic gate — ek baar likha topic dobara nahi banta<br>
           • Purane tech videos = <b style="color:var(--red)">archived</b>, kabhi publish nahi honge</p></div>
@@ -556,11 +702,11 @@ function renderPanels(s){
   const st=s.rumble_stats;
   const stPanel = st ? `
   <div class="panel"><h3>💰 Rumble earnings <span class="chip ${st.monetized&&!st.pending?'ok':'ip'}">${st.monetized}✅/${st.pending}⏳</span></h3>
-    <div class="bar-row"><span>All-time</span><small>${st.all_time.earnings} · ${st.all_time.views} views</small></div>
-    <div class="bar-row"><span>Last 30 days</span><small>${st.last30.earnings} · ${st.last30.views} views · ${st.last30.hours}h watched</small></div>
-    <div class="bar-row"><span>Balance (payout $50 pe)</span><small>${st.balance}</small></div>
-    <div class="bar-row"><span>Followers</span><small>${st.all_time.followers}</small></div>
-    <p class="note">Har video pe earnings: ${(st.earnings_rows||[]).slice(0,3).map(r=>esc(r.title.slice(0,38))+' — '+r.views+' views').join(' · ')} …<br>Stats checked: ${st.checked_at} (CI har cycle ke baad refresh karti hai). Pending wale videos kuch ghanton mein review hokar Monetized ban jate hain — earning 0 isliye hai kyunki views abhi kam hain, ye normal hai 📈</p></div>` : '';
+    <div class="bar-row"><span>All-time${st.account_totals?' <span class="dim">(account)</span>':''}</span><small>${st.all_time?.earnings||'$0.00'} · ${st.all_time?.views||'0'} views</small></div>
+    <div class="bar-row"><span>Last 30 days${st.account_totals?' <span class="dim">(account)</span>':''}</span><small>${st.last30?.earnings||'$0.00'} · ${st.last30?.views||'0'} views · ${st.last30?.hours||'0'}h watched</small></div>
+    <div class="bar-row"><span>Balance (payout $50 pe)</span><small>${st.balance||'unknown'}</small></div>
+    <div class="bar-row"><span>Followers</span><small>${st.all_time?.followers||'0'}</small></div>
+    <p class="note">${(st.earnings_rows||[]).length?('Har video pe earnings: '+esc((st.earnings_rows||[]).slice(0,3).map(r=>String(r.title).slice(0,38)+' — '+r.views+' views').join(' · '))+' …<br>'):''}${st.account_totals?'⚠ Rumble per-channel split nahi deta — All-time/Last-30/Balance poore account ke hain; ✅/⏳ aur rows sirf is channel ki videos.<br>':''}Stats checked: ${st.checked_at} (CI har cycle ke baad refresh karti hai). Pending wale videos kuch ghanton mein review hokar Monetized ban jate hain — earning 0 isliye hai kyunki views abhi kam hain, ye normal hai 📈</p></div>` : '';
   const success=s.success_rate||0;
   const gh2 = s.github || {};
   const ghRun = gh2.run_status ? ('#' + gh2.run_number + ' ' + ({
@@ -577,7 +723,7 @@ function renderPanels(s){
     <div class="bar-row"><span>Started</span><small>${gh2.run_started_at ? (gh2.run_started_at+' '+(gh2.run_event||'')) : (s.heartbeat?.last_start||'—')}</small></div>
     <div class="track"><div class="fill" style="width:${ghLive?55:100}%"></div></div>
     <div class="bar-row"><span>Cloud updated</span><small>${gh2.run_updated_at||s.heartbeat?.last_end||'—'}</small></div>
-    <p class="note">Scripts → approve → Edge-TTS render → <b>Rumble upload</b> (+ short). Scheduled: roz 2:30 AM IST (+ 9:00 AM IST backup-sirf-fail-par). Status: <b>${esc(s.cycle_state)}</b></p></div>
+    <p class="note">Scripts → approve → Edge-TTS render → <b>Rumble upload</b> (+ short). Scheduled: <b>${esc(s.meta?.schedule||'—')}</b>. Status: <b>${esc(s.cycle_state)}</b></p></div>
   <div class="panel"><h3>📈 Pipeline success <span class="chip ${success>60?'ok':success>25?'ip':'bad'}">${success}%</span></h3>
     <div class="bar-row"><span>Published / ever created</span><small>${c.published||0} / ${Object.values(c).reduce((a,b)=>a+b,0)}</small></div>
     <div class="track"><div class="fill" style="width:${success}%"></div></div>
@@ -585,7 +731,7 @@ function renderPanels(s){
     <div class="track"><div class="fill" style="width:${Math.min(100,(tc.new||0)*2)}%"></div></div>
     <p class="note">Topic-bank se har cycle guaranteed content nikalta hai — rejected topics automatically skip.</p></div>
   <div class="panel"><h3>🛰 Rumble upload <span class="chip ok">live</span></h3>
-    <div class="bar-row"><span>Channel</span><small><a href="${s.links.channel}" target="_blank">IndianHistoryOfficial ↗</a></small></div>
+    <div class="bar-row"><span>Channel</span><small><a href="${s.links.channel}" target="_blank">${esc(s.meta?.name||'channel')} ↗</a></small></div>
     <div class="track"><div class="fill" style="width:100%"></div></div>
     <div class="bar-row"><span>Cookies session</span><small>${s.rumble_cookies_since||'none'}</small></div>
     <div class="bar-row"><span>Content dashboard</span><small><a href="${s.links.content}" target="_blank">rumble.com/account ↗</a></small></div>
@@ -650,11 +796,11 @@ function renderJobs(){
       `<dt>state</dt><dd>${esc(s.cycle_state)}</dd>`,
       `<dt>last start</dt><dd>${esc(s.heartbeat?.last_start||'—')}</dd>`,
       `<dt>last end</dt><dd>${esc(s.heartbeat?.last_end||'—')}</dd>`,
-      `<dt>db</dt><dd>data/ytauto.db</dd>`,
-      `<dt>media</dt><dd>data/media/</dd>`,
-      `<dt>log</dt><dd>data/logs/launchd.log</dd>`,
+      `<dt>db</dt><dd>${esc(s.meta?.dbfile||'data/ytauto.db')}</dd>`,
+      `<dt>media</dt><dd>${esc(s.meta?.media||'data/media/')}</dd>`,
+      `<dt>log</dt><dd>${esc(s.meta?.log||'data/logs/launchd.log')}</dd>`,
       `<dt>cookies</dt><dd>${esc(s.rumble_cookies_since||'none')}</dd>`,
-      `<dt>channel</dt><dd><a href="${s.links.channel}" target="_blank">IndianHistoryOfficial ↗</a></dd>`,
+      `<dt>channel</dt><dd><a href="${s.links.channel}" target="_blank">${esc(s.meta?.name||'channel')} ↗</a></dd>`,
   ]))}</div>
   <div class="panel feedcard"><h3>🧠 Live processes</h3>
     ${feed(kv(s.live.procs.length
@@ -683,14 +829,14 @@ function renderSettings(){
   <div class="panels">
     <div class="panel feedcard"><h3>⚙ Config (.env mirror)</h3>${feed(`<dl class="kv">${rows.join('')}</dl>`)}</div>
     <div class="panel feedcard"><h3>⚙ Runtime</h3>${feed(`<dl class="kv">
-      <dt>Rumble channel</dt><dd><a href="https://rumble.com/c/IndianHistoryOfficial" target="_blank">IndianHistoryOfficial ↗</a></dd>
+      <dt>Rumble channel</dt><dd><a href="${D.status.links.channel}" target="_blank">${esc(D.status.meta?.name||'channel')} ↗</a></dd>
       <dt>Cookies saved</dt><dd>${esc(D.status.rumble_cookies_since||'none')}</dd>
       <dt>Last cycle start</dt><dd>${esc(D.status.heartbeat?.last_start||'—')}</dd>
       <dt>Last cycle end</dt><dd>${esc(D.status.heartbeat?.last_end||'—')}</dd>
       <dt>Dashboard port</dt><dd>8600 (local only)</dd>
-      <dt>DB file</dt><dd>data/ytauto.db</dd>
-      <dt>Media dir</dt><dd>data/media/</dd>
-      <dt>Scheduler log</dt><dd>data/logs/launchd.log</dd>
+      <dt>DB file</dt><dd>${esc(D.status.meta?.dbfile||'data/ytauto.db')}</dd>
+      <dt>Media dir</dt><dd>${esc(D.status.meta?.media||'data/media/')}</dd>
+      <dt>Scheduler log</dt><dd>${esc(D.status.meta?.log||'data/logs/launchd.log')}</dd>
     </dl>`)}</div>
   </div>`;
 }
@@ -715,7 +861,7 @@ function render(){
 
 async function refresh(){
   try {
-    D = await (await fetch('/api/all')).json();
+    D = await (await fetch({{APIJSON}})).json();
     render();
   } catch(err) {
     document.getElementById('meta').textContent = 'server down? dashboard.py start karo';
@@ -726,10 +872,39 @@ refresh(); setInterval(refresh, 5000);
 </script>
 </body></html>"""
 
+
+def render_page(ch: str = "history", *, logout: str = "",
+                href_hist: str = "/", href_blue: str = "/blue",
+                api_json: "str | None" = None) -> str:
+    """Colour the ONE shared PAGE template for one channel's page.
+
+    Local server renders this per request (history at /, blue at /blue);
+    the static Netlify export calls the same function with file hrefs
+    (./index.html / ./blue.html), the edge-gate logout link and a
+    ./all*.json data source. One template, one theme, two channel pages.
+    """
+    meta = CHANNELS.get(ch, CHANNELS["history"])
+    page = PAGE
+    for key, val in (
+        ("{{CNAME}}", meta["name"]),
+        ("{{CLOGO}}", meta["logo"]),
+        ("{{CSUB}}", meta["sub"]),
+        ("{{CHANNEL}}", meta["url"]),
+        ("{{CPOLICY}}", meta["policy"]),
+        ("{{CLOGS}}", meta["logs_label"]),
+        ("{{HREF_HIST}}", href_hist),
+        ("{{HREF_BLUE}}", href_blue),
+        ("{{ON_HIST}}", "active" if ch == "history" else ""),
+        ("{{ON_BLUE}}", "active" if ch == "blue" else ""),
+        ("{{APIJSON}}", api_json or f"'/api/all?ch={ch}'"),
+    ):
+        page = page.replace(key, val)
+    # The logout slot renders as nothing locally (no gate) but as a direct
+    # nav child on Netlify, where .nav .ext margin must keep it bottom-pinned.
+    return page.replace('<span class="lo-slot">{{LOGOUT}}</span>', logout)
+
+
 if __name__ == "__main__":
-    # No login gate exists locally, so the logout entry stays off here.
-    PAGE = PAGE.replace('{{LOGOUT}}', '')
-    PAGE = PAGE.replace("{{CHANNEL}}", "https://rumble.com/c/IndianHistoryOfficial")
     import threading
     try:
         import ci_sync  # noqa: E402 - same directory as this script
@@ -738,5 +913,6 @@ if __name__ == "__main__":
                          name="ci-sync").start()
     except Exception as exc:  # noqa: BLE001 - dashboard still works local-only
         print(f"ci-sync disabled: {exc}", flush=True)
-    print(f"ytauto dashboard → http://localhost:{PORT}", flush=True)
+    print(f"ytauto dashboard → http://localhost:{PORT}  "
+          "(/ = History Facts, /blue = Blue Deep Facts)", flush=True)
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
