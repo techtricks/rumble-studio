@@ -1,0 +1,218 @@
+name: ytauto-cycle-sea
+
+# The SECOND channel: sea / underwater life (same engine, different niche).
+# Everything mirrors ytauto-cycle — its own state artifact (ytauto-state-sea),
+# its own schedule slot so it never contends with the history runs, and its
+# own Rumble target channel via the RUMBLE_CHANNEL_SEA secret. Same free
+# GitHub runners, same Groq model, same renderer.
+
+on:
+  schedule:
+    # UTC 12:23 = 5:53 PM IST = 7:23 AM Eastern (US morning) — deliberately
+    # ~9h away from the history channel's slots so the two cycles never share
+    # a runner window or the Groq TPM budget at the same time.
+    - cron: "23 12 * * *"
+    # Backup slot ~6.5h later (11:53 PM IST). CATCHUP_HOURS=14 makes it a
+    # no-op when the main sea run already finished cleanly.
+    - cron: "53 18 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Rehearse only — no publishing, no LLM-render risk"
+        default: false
+        type: boolean
+
+concurrency:
+  group: ytauto-cycle-sea
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read # to restore the previous run's database artifact
+
+jobs:
+  # Gate: until the Rumble sea channel exists and its name is in the
+  # RUMBLE_CHANNEL_SEA secret, scheduled runs would upload ocean videos to
+  # whatever channel the uploader falls back to (the history one). The cycle
+  # job waits for this gate instead of publishing into the wrong channel.
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - id: check
+        env:
+          RUMBLE_CHANNEL: ${{ secrets.RUMBLE_CHANNEL_SEA }}
+        run: |
+          if [ -n "$RUMBLE_CHANNEL" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "sea channel target: $RUMBLE_CHANNEL"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::RUMBLE_CHANNEL_SEA secret is not set — create the sea channel on Rumble, then run: gh secret set RUMBLE_CHANNEL_SEA (paste the exact channel name). Cycle skipped safely."
+          fi
+
+  cycle:
+    needs: gate
+    if: needs.gate.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Fonts + system deps
+        run: sudo apt-get update -y -o Acquire::Retries=3 && sudo apt-get install -y --no-install-recommends -o Acquire::Retries=3 ffmpeg fonts-noto-core
+
+      - name: Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Browser for the Rumble uploader
+        run: playwright install --with-deps chromium
+
+      - name: Restore the state (topic bank, published status, quota ledger)
+        id: restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p data
+          # Sea channel keeps SEPARATE state — its own topic bank, its own
+          # published history — under a different artifact name.
+          art=$(gh api "repos/$REPO/actions/artifacts?name=ytauto-state-sea&per_page=1" --jq '.artifacts[0].id // empty')
+          if [ -n "$art" ]; then
+            echo "found state artifact $art"
+            gh api "repos/$REPO/actions/artifacts/$art/zip" > state.zip
+            unzip -o state.zip -d data/
+            rm state.zip
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: First run — seed the evergreen ocean topic bank
+        if: ${{ steps.restore.outputs.found != 'true' }}
+        run: python tools/seed_ocean_topics.py
+
+      - name: Repair videos that infra once blocked (dead ffmpeg runs)
+        run: |
+          python - <<'PY'
+          from ytauto.db import get_db
+          db = get_db()
+          rows = db.conn.execute(
+              "select id, last_error from videos where status='failed'"
+          ).fetchall()
+          repaired = 0
+          for r in rows:
+              if "no valid YouTube credentials" in (r["last_error"] or ""):
+                  db.set_status(r["id"], "approved")
+                  db.release(r["id"], owner="youtube/repair")
+                  repaired += 1
+                  continue
+              if "ffmpeg timed out" in (r["last_error"] or ""):
+                  db.set_status(r["id"], "approved")
+                  db.release(r["id"], owner="youtube/repair")
+                  repaired += 1
+                  continue
+              if "sequence item 0" in (r["last_error"] or ""):
+                  db.set_status(r["id"], "approved")
+                  db.release(r["id"], owner="youtube/repair")
+                  repaired += 1
+              if "ffmpeg not found" in (r["last_error"] or ""):
+                  db.set_status(r["id"], "approved")
+                  db.release(r["id"], owner="youtube/repair")
+                  repaired += 1
+          print(f"repaired {repaired} ffmpeg-blocked videos")
+          PY
+
+      - name: Rumble session (optional secret)
+        env:
+          RUMBLE_COOKIES_B64: ${{ secrets.RUMBLE_COOKIES_B64 }}
+        run: |
+          mkdir -p secrets
+          if [ -n "$RUMBLE_COOKIES_B64" ]; then
+            printf '%s' "$RUMBLE_COOKIES_B64" | base64 -d > secrets/rumble_cookies.json
+          else
+            echo "no RUMBLE_COOKIES_B64 secret — Rumble upload will be skipped/warn"
+          fi
+
+      - name: Run the cycle
+        env:
+          # secrets
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER || 'groq' }}
+          RUMBLE_EMAIL: ${{ secrets.RUMBLE_EMAIL }}
+          RUMBLE_PASSWORD: ${{ secrets.RUMBLE_PASSWORD }}
+          # The sea channel's own upload target (same account, other channel).
+          RUMBLE_CHANNEL: ${{ secrets.RUMBLE_CHANNEL_SEA }}
+          # non-secret config — ocean edition
+          LANGUAGE: English
+          SUBTITLE_LANGUAGES: Hindi,Bengali,French
+          TARGET_AUDIENCE: "ocean lovers,scuba divers,marine life fans,deep-sea mystery curious"
+          BRAND: Blue Deep — Ocean & Underwater Life
+          BRAND_TAGLINE: "Ocean, underwater life & deep-sea mysteries explained"
+          BRAND_URL: https://rumble.com/
+          NICHE: "sea,ocean,underwater,marine life,deep sea,coral,coral reef,whale,shark,octopus,jellyfish,anglerfish,bioluminescence,kelp,seaweed,plankton,turtle,seal,dolphin,manta ray,starfish,clam,crab,lobster,sponge,anemone,squid,krill,blue hole,shipwreck,treasure ship,submarine,diver,diving,scuba,cave diving,hydrothermal vent,volcano underwater,trench,abyss,coast,beach,tsunami,tide,reef fish,pacific,atlantic,arctic,antarctic,monsoon sea,estuary,mangrove,lagoon,tide pool,marine biologist,extinct sea creature,megalodon,plesiosaur,nautilus,shipwreck mystery"
+          RSS_FEEDS: "https://www.sciencedaily.com/rss/oceans_news.xml,https://phys.org/rss-feed/biology-earth-science/oceans/,https://www.oceanconservancy.org/blog/feed/,https://www.smithsonianmag.com/rss/latest_articles/,https://theconversation.com/articles.atom"
+          SUBREDDITS: marinebiology,oceanography,scuba,deepsea
+          GROQ_MODEL: openai/gpt-oss-120b
+          SCRIPTS_PER_CYCLE: "1"
+          LLM_OTPM: "6000"
+          UPLOADS_PER_CYCLE: "0"
+          TIMEZONE: Asia/Kolkata
+          AUTO_APPROVE: "1"
+          ALLOW_DEGRADED: ""
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
+          RENDERS_PER_CYCLE: "1"
+          RENDER_TIMEOUT_S: "1800"
+          IMAGES_PER_VIDEO: "12"
+          MIN_NICHE_SCORE: "0"
+          MIN_TOTAL_SCORE: "0.20"
+          TTS_ENGINE: edge
+          CATCHUP_HOURS: "14"
+        run: python -m ytauto run --cycles 1
+
+      - name: Publish to Rumble (longform + shorts rendered this cycle)
+        if: always()
+        env:
+          RUMBLE_EMAIL: ${{ secrets.RUMBLE_EMAIL }}
+          RUMBLE_PASSWORD: ${{ secrets.RUMBLE_PASSWORD }}
+          RUMBLE_CHANNEL: ${{ secrets.RUMBLE_CHANNEL_SEA }}
+        continue-on-error: true
+        run: python -m ytauto rumble
+
+      - name: Channel stats (views + monetization + earnings)
+        if: always()
+        run: |-
+          python tools/rumble_stats.py || echo "stats scrape failed (non-fatal)"
+
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## Sea cycle result $(date -u '+%F %T')Z"
+            echo '```'
+            tail -n 40 data/logs/*.log 2>/dev/null | tail -n 60 || echo "(no logs)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Merge SQLite WAL into the state DB
+        if: always()
+        run: python -c "import sqlite3; c = sqlite3.connect('data/ytauto.db'); c.execute('PRAGMA wal_checkpoint(TRUNCATE)'); c.close(); print('WAL merged — the state DB is current')"
+
+      - name: Persist the state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytauto-state-sea
+          path: |
+            data/ytauto.db
+            data/rumble_stats.json
+          retention-days: 90
+          if-no-files-found: warn
