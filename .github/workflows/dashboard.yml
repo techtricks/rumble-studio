@@ -19,7 +19,7 @@ name: ytauto-dashboard
 
 on:
   workflow_run:
-    workflows: [ytauto-cycle]
+    workflows: [ytauto-cycle, ytauto-cycle-sea, ytauto-cycle-space]
     types: [completed]
   # No timer on purpose: the free Netlify plan gives ~300 deploy credits per
   # month and the data only changes when a cycle runs (twice a day). The old

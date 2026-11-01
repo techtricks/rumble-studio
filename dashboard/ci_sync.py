@@ -25,10 +25,12 @@ CI_DIR = Path(__file__).resolve().parent.parent / "data" / "ci"
 DB_OUT = CI_DIR / "ytauto.db"
 STAMP = CI_DIR / "state.stamp"
 RUNS_OUT = CI_DIR / "runs.json"
-# The sea channel keeps its own state artifact; its DB feeds the dashboard's
-# ocean page. Both sync in one pass.
+# The sea and space channels keep their own state artifacts; their DBs feed
+# the dashboard's blue and space pages. All three sync in one pass.
 SEA_DB = CI_DIR / "ytauto_sea.db"
 SEA_STAMP = CI_DIR / "state_sea.stamp"
+SPACE_DB = CI_DIR / "ytauto_space.db"
+SPACE_STAMP = CI_DIR / "state_space.stamp"
 
 
 def _gh() -> str:
@@ -149,16 +151,18 @@ def _sync_runs() -> None:
 
 
 def sync_once() -> None:
-    """One full sync pass (never raises): history channel + sea channel."""
+    """One full sync pass (never raises): one artifact per channel."""
     CI_DIR.mkdir(parents=True, exist_ok=True)
     art = _latest_artifact()
     if art and _sync_db(art):
         print(f"[ci-sync] state DB updated (artifact {art['id']})", flush=True)
-    sea = _latest_artifact("ytauto-state-sea")
-    if sea and _sync_db(sea, db_out=SEA_DB, stamp=SEA_STAMP,
-                        want_stats=False):
-        print(f"[ci-sync] sea state DB updated (artifact {sea['id']})",
-              flush=True)
+    for label, name, db_out, stamp in (
+            ("sea", "ytauto-state-sea", SEA_DB, SEA_STAMP),
+            ("space", "ytauto-state-space", SPACE_DB, SPACE_STAMP)):
+        got = _latest_artifact(name)
+        if got and _sync_db(got, db_out=db_out, stamp=stamp, want_stats=False):
+            print(f"[ci-sync] {label} state DB updated (artifact {got['id']})",
+                  flush=True)
     _sync_runs()
 
 

@@ -1,0 +1,226 @@
+name: ytauto-cycle-space
+
+# The THIRD channel: space / astronomy facts (same engine, different niche).
+# Everything mirrors ytauto-cycle-sea — its own state artifact
+# (ytauto-state-space), its own schedule slot so it never contends with the
+# history or sea runs, and its own Rumble target channel via the
+# RUMBLE_CHANNEL_SPACE secret. Same free GitHub runners, same Groq model,
+# same renderer.
+
+on:
+  schedule:
+    # UTC 23:07 = 4:37 AM IST = 6:07 PM Eastern (US evening ramp-up starts) —
+    # ~2h after the history main run and ~4h after the sea backup, so the
+    # three cycles never share a runner window or the Groq TPM budget.
+    - cron: "7 23 * * *"
+    # Backup slot ~6.5h later (11:07 AM IST). CATCHUP_HOURS=14 makes it a
+    # no-op when the main space run already finished cleanly.
+    - cron: "37 5 * * *"
+  workflow_dispatch:
+    inputs:
+      dry_run:
+        description: "Rehearse only — no publishing, no LLM-render risk"
+        default: false
+        type: boolean
+
+concurrency:
+  group: ytauto-cycle-space
+  cancel-in-progress: false
+
+permissions:
+  contents: read
+  actions: read # to restore the previous run's database artifact
+
+jobs:
+  # Gate: until the Rumble space channel exists and its name is in the
+  # RUMBLE_CHANNEL_SPACE secret, scheduled runs would upload space videos to
+  # whatever channel the uploader falls back to (the history one). The cycle
+  # job waits for this gate instead of publishing into the wrong channel.
+  gate:
+    runs-on: ubuntu-latest
+    outputs:
+      ready: ${{ steps.check.outputs.ready }}
+    steps:
+      - id: check
+        env:
+          RUMBLE_CHANNEL: ${{ secrets.RUMBLE_CHANNEL_SPACE }}
+        run: |
+          if [ -n "$RUMBLE_CHANNEL" ]; then
+            echo "ready=true" >> "$GITHUB_OUTPUT"
+            echo "space channel target: $RUMBLE_CHANNEL"
+          else
+            echo "ready=false" >> "$GITHUB_OUTPUT"
+            echo "::warning::RUMBLE_CHANNEL_SPACE secret is not set — create the space channel on Rumble, then run: gh secret set RUMBLE_CHANNEL_SPACE (paste the exact channel name). Cycle skipped safely."
+          fi
+
+  cycle:
+    needs: gate
+    if: needs.gate.outputs.ready == 'true'
+    runs-on: ubuntu-latest
+    timeout-minutes: 120
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+          cache: pip
+
+      - name: Fonts + system deps
+        # ffmpeg is NOT on the runner image any more (2026): the render stage
+        # hard-requires it. Use retries — the Ubuntu archive throttles badly
+        # some evenings (two consecutive runs straggled here for a while).
+        run: sudo apt-get update -y -o Acquire::Retries=3 && sudo apt-get install -y --no-install-recommends ffmpeg fonts-noto-core
+
+      - name: Python deps
+        run: |
+          python -m pip install --upgrade pip
+          pip install -r requirements.txt
+
+      - name: Browser for the Rumble uploader
+        run: playwright install --with-deps chromium
+
+      - name: Restore the state (topic bank, published status, quota ledger)
+        id: restore
+        env:
+          GH_TOKEN: ${{ github.token }}
+          REPO: ${{ github.repository }}
+        run: |
+          mkdir -p data
+          # Space channel keeps SEPARATE state — its own topic bank, its own
+          # published history — under a different artifact name.
+          art=$(gh api "repos/$REPO/actions/artifacts?name=ytauto-state-space&per_page=1" --jq '.artifacts[0].id // empty')
+          if [ -n "$art" ]; then
+            echo "found state artifact $art"
+            gh api "repos/$REPO/actions/artifacts/$art/zip" > state.zip
+            unzip -o state.zip -d data/
+            rm state.zip
+            echo "found=true" >> "$GITHUB_OUTPUT"
+          else
+            echo "found=false" >> "$GITHUB_OUTPUT"
+          fi
+
+      - name: First run — seed the evergreen space topic bank
+        if: ${{ steps.restore.outputs.found != 'true' }}
+        run: python tools/seed_space_topics.py
+
+      - name: Repair videos that infra once blocked (dead ffmpeg runs)
+        run: |
+          python - <<'PY'
+          from ytauto.db import get_db
+          db = get_db()
+          rows = db.conn.execute(
+              "select id, last_error from videos where status='failed'"
+          ).fetchall()
+          repaired = 0
+          for r in rows:
+              if "no valid YouTube credentials" in (r["last_error"] or ""):
+                  db.set_status(r["id"], "approved")
+                  db.release(r["id"], owner="youtube/repair")
+                  repaired += 1
+                  continue
+              if "ffmpeg timed out" in (r["last_error"] or ""):
+                  db.set_status(r["id"], "approved")
+                  db.release(r["id"], owner="youtube/repair")
+                  repaired += 1
+                  continue
+              if "sequence item 0" in (r["last_error"] or ""):
+                  db.set_status(r["id"], "approved")
+                  db.release(r["id"], owner="youtube/repair")
+                  repaired += 1
+                  continue
+              if "ffmpeg not found" in (r["last_error"] or ""):
+                  db.set_status(r["id"], "approved")
+                  db.release(r["id"], owner="youtube/repair")
+                  repaired += 1
+          print(f"repaired {repaired} ffmpeg-blocked videos")
+          PY
+
+      - name: Rumble session (optional secret)
+        env:
+          RUMBLE_COOKIES_B64: ${{ secrets.RUMBLE_COOKIES_B64 }}
+        run: |
+          mkdir -p secrets
+          if [ -n "$RUMBLE_COOKIES_B64" ]; then
+            printf '%s' "$RUMBLE_COOKIES_B64" | base64 -d > secrets/rumble_cookies.json
+          else
+            echo "no RUMBLE_COOKIES_B64 secret — Rumble upload will be skipped/warn"
+          fi
+
+      - name: Run the cycle
+        env:
+          # secrets
+          GROQ_API_KEY: ${{ secrets.GROQ_API_KEY }}
+          LLM_PROVIDER: ${{ secrets.LLM_PROVIDER || 'groq' }}
+          RUMBLE_EMAIL: ${{ secrets.RUMBLE_EMAIL }}
+          RUMBLE_PASSWORD: ${{ secrets.RUMBLE_PASSWORD }}
+          # The space channel's own upload target (same account, other channel).
+          RUMBLE_CHANNEL: ${{ secrets.RUMBLE_CHANNEL_SPACE }}
+          # non-secret config — space edition
+          LANGUAGE: English
+          SUBTITLE_LANGUAGES: Hindi,Bengali,French
+          TARGET_AUDIENCE: "space lovers,amateur astronomers,stargazers,science enthusiasts,curious minds"
+          BRAND: Space Facts — Astronomy & the Universe
+          BRAND_TAGLINE: "Space, astronomy & cosmic mysteries explained"
+          BRAND_URL: https://rumble.com/
+          NICHE: "space,galaxy,nebula,star,stars,black hole,neutron star,pulsar,quasar,supernova,asteroid,comet,meteor,meteorite,planet,exoplanet,moon,mars,jupiter,saturn,venus,mercury,neptune,uranus,pluto,solar system,sun,eclipse,aurora,telescope,orbit,rocket,launch,spacex,nasa,esa,james webb,hubble,apollo,iss,space station,cosmos,universe,galaxies,milky way,dark matter,dark energy,gravity,gravitational wave,cosmic,radiation,light year,extraterrestrial,life on mars,asteroid belt,oort cloud,kuiper belt,solar flare,corona,big bang,cosmic microwave background,habitable zone,rover,satellite,space telescope,pale blue dot,interstellar"
+          RSS_FEEDS: "https://science.nasa.gov/feed/,https://www.space.com/feeds/all,https://www.universetoday.com/feed/,https://www.esa.int/rssfeed/Our_Activities/Space_News"
+          SUBREDDITS: space,astronomy,astrophysics,spaceflight
+          GROQ_MODEL: openai/gpt-oss-120b
+          SCRIPTS_PER_CYCLE: "1"
+          LLM_OTPM: "6000"
+          UPLOADS_PER_CYCLE: "0"
+          TIMEZONE: Asia/Kolkata
+          AUTO_APPROVE: "1"
+          ALLOW_DEGRADED: ""
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
+          RENDERS_PER_CYCLE: "1"
+          RENDER_TIMEOUT_S: "1800"
+          IMAGES_PER_VIDEO: "12"
+          MIN_NICHE_SCORE: "0"
+          MIN_TOTAL_SCORE: "0.20"
+          TTS_ENGINE: edge
+          CATCHUP_HOURS: "14"
+        run: python -m ytauto run --cycles 1
+
+      - name: Publish to Rumble (longform + shorts rendered this cycle)
+        if: always()
+        # Same DRY_RUN contract as cycle.yml: rehearse stays offline, a
+        # scheduled (or explicitly live) run publishes.
+        env:
+          RUMBLE_EMAIL: ${{ secrets.RUMBLE_EMAIL }}
+          RUMBLE_PASSWORD: ${{ secrets.RUMBLE_PASSWORD }}
+          RUMBLE_CHANNEL: ${{ secrets.RUMBLE_CHANNEL_SPACE }}
+          DRY_RUN: ${{ inputs.dry_run == true && '1' || '0' }}
+        continue-on-error: true
+        run: python -m ytauto rumble
+
+      - name: Channel stats (views + monetization + earnings)
+        if: always()
+        run: |-
+          python tools/rumble_stats.py || echo "stats scrape failed (non-fatal)"
+
+      - name: Report
+        if: always()
+        run: |
+          {
+            echo "## Space cycle result $(date -u '+%F %T')Z"
+            echo '```'
+            tail -n 40 data/logs/*.log 2>/dev/null | tail -n 60 || echo "(no logs)"
+            echo '```'
+          } >> "$GITHUB_STEP_SUMMARY"
+
+      - name: Merge SQLite WAL into the state DB
+        if: always()
+        run: python -c "import sqlite3; c = sqlite3.connect('data/ytauto.db'); c.execute('PRAGMA wal_checkpoint(TRUNCATE)'); c.close(); print('WAL merged — the state DB is current')"
+
+      - name: Persist the state
+        if: always()
+        uses: actions/upload-artifact@v4
+        with:
+          name: ytauto-state-space
+          path: |
+            data/ytauto.db
+            data/rumble_stats.json
+          retention-days: 90
+          if-no-files-found: warn

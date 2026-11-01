@@ -70,6 +70,14 @@ sudo pmset -a displaysleep 10      # screen sleep theek hai
 - Channel ka naam secret `RUMBLE_CHANNEL_SEA` me hai — badalna ho to: `gh secret set RUMBLE_CHANNEL_SEA`
 - Agar secret delete ho jaye toh cycle CHUP-CHAP chhod deti hai (galat channel par video jaane se pehle ruk jati hai)
 
+## 🪐 Teesra channel — Space / Astronomy Facts
+- Channel: https://rumble.com/c/c-7980134 (dashboard: https://rumblechannel.netlify.app/space.html — "Space Facts" page; sidebar se teeno channels ek hi dashboard me switch hote hain)
+- Apna workflow: `.github/workflows/cycle-space.yml` — roz **4:37 AM IST** (US shaam peak se pehle) + backup **11:07 AM IST** (history 2:37 AM aur sea 5:53 PM se door — Groq/runners kabhi nahi takrayenge)
+- Alag state DB (`ytauto-state-space`) — space ke topics/publish history sab alag; sources: NASA Science, Space.com, Universe Today, ESA (sab RSS verified)
+- Manual run: Actions → **ytauto-cycle-space** → Run workflow (`dry_run=true` = sirf rehearsal, publish NAHI hota)
+- Channel ka naam secret `RUMBLE_CHANNEL_SPACE` me hai (uploader ka label "Space / Astronomy facts" isi se match hota hai) — badalna ho to: `gh secret set RUMBLE_CHANNEL_SPACE`
+- Agar secret delete ho jaye toh cycle CHUP-CHAP chhod deti hai (galat channel par video jaane se pehle ruk jati hai)
+
 ## Safety rails jo ON hain
 - AUTO_APPROVE=1 lekin: research-confidence, niche (Indian + world history — battles/empires), duplicate & originality gates ke bina script auto-publish NAHI hota
 - 6cc/CC-license images only, rotating voices — monetisation-safe defaults

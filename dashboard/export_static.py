@@ -5,6 +5,7 @@ The local dashboard at 127.0.0.1:8600 needs this Mac. The online one does
 not: this script bakes the exact same UI into a folder of plain files —
   index.html    History Facts channel page (frontend reads ./all.json)
   blue.html     Blue Deep Facts channel page (reads ./all_blue.json)
+  space.html    Space Facts channel page (reads ./all_space.json)
   all*.json     the same payload as the local server's /api/all?ch=…
   media/        every thumbnail that exists locally
 
@@ -140,6 +141,7 @@ def _media(db_thumbs: list[str], site: Path) -> set[str]:
 
 
 SEA_DB = ROOT / "data" / "ci" / "ytauto_sea.db"
+SPACE_DB = ROOT / "data" / "ci" / "ytauto_space.db"
 
 # Auto-logout: a public-ish private dashboard shouldn't stay signed in on an
 # unattended screen. Any human signal resets the 2-minute idle clock; 30 s
@@ -189,6 +191,7 @@ def _page_html(dash, *, ch: str, json_name: str) -> str:
         logout=_LOGOUT_HTML,                       # edge-gate cookie kill
         href_hist="./index.html",                  # sidebar channel switcher
         href_blue="./blue.html",
+        href_space="./space.html",
         api_json=f"'./{json_name}'")
     phtml = phtml.replace(
         "refresh(); setInterval(refresh, 5000);",
@@ -244,40 +247,48 @@ def main() -> None:
     (site / "all.json").write_text(
         json.dumps(_payload(status, videos, topics, settings), default=str))
 
-    # ---------- blue channel: blue.html + all_blue.json ----------
-    # The sea pipeline is newer than the dashboard: before its FIRST cycle
-    # finishes there is no ytauto_sea.db at all. That is not an error — the
-    # Blue Deep Facts page then shows an honest empty state (never history's
-    # numbers borrowed) and fills in on the next build after the first sea
-    # cycle persists its state artifact.
-    blue_videos: list = []
-    blue_topics: list = []
-    blue_status = _status(ch="blue")
-    if SEA_DB.exists():
-        blue_videos = dash.api_videos(SEA_DB)
-        blue_topics = dash.api_topics(SEA_DB)
-        blue_copied = _media([v.get("thumb") or "" for v in blue_videos], site)
-        for v in blue_videos:
-            if v.get("thumb") and v["thumb"] not in blue_copied:
-                v["thumb"] = None
-    else:
-        print("[blue] no data/ci/ytauto_sea.db yet — Blue Deep Facts ships "
-              "empty until the first sea cycle persists its state")
-    (site / "all_blue.json").write_text(
-        json.dumps(_payload(blue_status, blue_videos, blue_topics, settings),
-                   default=str))
+    # ---------- cloud-only channels: blue.html + space.html ----------
+    # Their pipelines are newer than the dashboard: before a channel's FIRST
+    # cycle finishes there is no synced DB at all. That is not an error —
+    # the page then shows an honest empty state (never history's numbers
+    # borrowed) and fills in on the next build after that cycle persists
+    # its state artifact.
+    extras: dict[str, tuple[list, list]] = {}
+    for ch in ("blue", "space"):
+        cvids: list = []
+        ctopics: list = []
+        cstatus = _status(ch=ch)
+        cdb = {"blue": SEA_DB, "space": SPACE_DB}[ch]
+        if cdb.exists():
+            cvids = dash.api_videos(cdb)
+            ctopics = dash.api_topics(cdb)
+            ccopied = _media([v.get("thumb") or "" for v in cvids], site)
+            for v in cvids:
+                if v.get("thumb") and v["thumb"] not in ccopied:
+                    v["thumb"] = None
+        else:
+            print(f"[{ch}] no {cdb} yet — page ships empty until the first "
+                  "cycle persists its state")
+        (site / f"all_{ch}.json").write_text(
+            json.dumps(_payload(cstatus, cvids, ctopics, settings),
+                       default=str))
+        extras[ch] = (cvids, ctopics)
 
     # ---------- pages: the shared template, once per channel ----------
-    # The sidebar channel switcher (History Facts ↔ Blue Deep Facts) is part
-    # of the template now, so there is nothing extra to stitch in here.
+    # The sidebar channel switcher is part of the template now, so there is
+    # nothing extra to stitch in here.
     (site / "index.html").write_text(
         _page_html(dash, ch="history", json_name="all.json"))
-    (site / "blue.html").write_text(
-        _page_html(dash, ch="blue", json_name="all_blue.json"))
+    for ch in ("blue", "space"):
+        (site / f"{ch}.html").write_text(
+            _page_html(dash, ch=ch, json_name=f"all_{ch}.json"))
 
     print(f"static dashboard ready: {site}  "
           f"(History Facts: {len(videos)} videos / {len(topics)} topics | "
-          f"Blue Deep Facts: {len(blue_videos)} videos / {len(blue_topics)} topics)")
+          f"Blue Deep Facts: {len(extras['blue'][0])} videos / "
+          f"{len(extras['blue'][1])} topics | "
+          f"Space Facts: {len(extras['space'][0])} videos / "
+          f"{len(extras['space'][1])} topics)")
 
 
 if __name__ == "__main__":

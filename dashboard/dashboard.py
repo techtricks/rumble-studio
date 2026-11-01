@@ -6,8 +6,9 @@ logs/database. Serves:
 
   /            History Facts channel page (dark neon theme, auto-refresh)
   /blue        Blue Deep Facts channel page — same app, own state DB
+  /space       Space Facts channel page — same app, own state DB
   /api/*       JSON snapshots (status, videos, topics, runs, logs, settings);
-               ?ch=history|blue picks the channel (default history)
+               ?ch=history|blue|space picks the channel (default history)
   /media/*     rendered thumbnails (jpg/png) straight from data/media/
 
 Cards are clickable: clicking e.g. "failed" opens the Videos view filtered to
@@ -32,6 +33,7 @@ ROOT = Path(__file__).resolve().parent.parent
 DB = ROOT / "data" / "ytauto.db"
 CI_DB = ROOT / "data" / "ci" / "ytauto.db"   # synced from GitHub Actions
 SEA_DB = ROOT / "data" / "ci" / "ytauto_sea.db"  # sea channel's synced state
+SPACE_DB = ROOT / "data" / "ci" / "ytauto_space.db"  # space channel's state
 LOG = ROOT / "data" / "logs" / "launchd.log"
 ENV = ROOT / ".env"
 MEDIA = ROOT / "data" / "media"
@@ -72,6 +74,20 @@ CHANNELS: dict[str, dict] = {
                   "ScienceDaily Oceans, Phys.org, Ocean Conservancy, "
                   "Smithsonian, The Conversation)<br>",
     },
+    "space": {
+        "name": "Space Facts",
+        "logo": "🪐",
+        "sub": "Space · Astronomy · Cosmos",
+        "url": "https://rumble.com/c/c-7980134",
+        "db": SPACE_DB,                  # synced from ytauto-state-space
+        "schedule": "roz 4:37 AM IST (+ 11:07 AM IST backup)",
+        "dbfile": "data/ci/ytauto_space.db",
+        "media": "data/media/ (CI runs)",
+        "log": "GitHub Actions · cycle-space.yml",
+        "logs_label": "cycle-space.yml — cloud pipeline (Mac pe kuch nahi chalta)",
+        "policy": "• Sirf space / astronomy topics (sources: NASA Science, "
+                  "Space.com, Universe Today, ESA)<br>",
+    },
 }
 
 
@@ -85,20 +101,27 @@ def ch_db(ch: str) -> "Path | None":
     return CHANNELS.get(ch, CHANNELS["history"])["db"]
 
 
+# workflow-name token each non-history channel keys off in runs.json
+RUN_TOKENS = {"blue": "sea", "space": "space"}
+
+
 def channel_runs(ch: str, runs: list[dict]) -> list[dict]:
     """GitHub runs belonging to this channel's workflow.
 
-    runs.json mixes ytauto-cycle, ytauto-cycle-sea and ytauto-dashboard;
-    display_title is the workflow name for scheduled/dispatched runs. The
-    sea page must never show a history cycle as its own (and vice versa) —
-    when nothing matches, history falls back to everything so a renamed
-    workflow cannot blank the card, while the sea page stays honestly empty
-    until its first cycle exists.
+    runs.json mixes ytauto-cycle, ytauto-cycle-sea, ytauto-cycle-space and
+    ytauto-dashboard; display_title is the workflow name for scheduled and
+    dispatched runs. No page may ever show another channel's cycle as its
+    own — when nothing matches, history falls back to everything so a
+    renamed workflow cannot blank its card, while the newer channels stay
+    honestly empty until their first cycle exists.
     """
+    token = RUN_TOKENS.get(ch)
+    if token:
+        return [r for r in runs
+                if token in (r.get("title") or "").lower()]
     hit = [r for r in runs
-           if ("sea" in (r.get("title") or "").lower()) == (ch == "blue")]
-    if ch == "blue":
-        return hit
+           if not any(t in (r.get("title") or "").lower()
+                      for t in RUN_TOKENS.values())]
     return hit or list(runs)
 
 
@@ -179,12 +202,13 @@ def api_status(db_path: "Path | None" = None, ch: str = "history") -> dict:
                    db_path=db_path)
     last_run = runs[0] if runs else None
 
-    # Cloud (GitHub Actions) drives the live badge: the sea channel only
-    # ever runs there, and a history cycle must not light up its page.
+    # Cloud (GitHub Actions) drives the live badge: the sea and space
+    # channels only ever run there, and a history cycle must not light up
+    # their pages (or vice versa — the local Mac cycle is history-only).
     ci = _ci_status()
     gh_all = ci.get("runs") or []
     gh_runs = channel_runs(ch, gh_all)
-    running = ({"running": False, "procs": []} if ch == "blue"
+    running = ({"running": False, "procs": []} if ch != "history"
                else _live_cycle())
     active = [r for r in gh_runs
               if r.get("status") in ("in_progress", "queued")
@@ -193,10 +217,10 @@ def api_status(db_path: "Path | None" = None, ch: str = "history") -> dict:
         running = {"running": True,
                    "procs": [f"github-actions run #{active[0].get('number', '')}"]}
 
-    # heartbeat: the sea channel's clock is its workflow, history's is the
-    # launchd log (its CI runs show up in the table anyway).
+    # heartbeat: the cloud-only channels' clock is their workflow, history's
+    # is the launchd log (its CI runs show up in the table anyway).
     heartbeat = None
-    if ch == "blue":
+    if ch != "history":
         for r in gh_runs:
             if r.get("status") == "completed":
                 heartbeat = {"last_start": r.get("started_at"),
@@ -261,20 +285,25 @@ def api_status(db_path: "Path | None" = None, ch: str = "history") -> dict:
                 rumble_stats = None
             break
     if rumble_stats:
-        other_db = CI_DB if ch == "blue" else SEA_DB
         own = _title_keys(r["title"] for r in
                           db_rows("select title from videos", db_path=db_path))
-        other = _title_keys(r["title"] for r in db_rows(
-            "select title from videos", db_path=other_db)) if other_db.exists() else set()
+        other: set = set()
+        for key, cmeta in CHANNELS.items():
+            if key == ch:
+                continue
+            odb = cmeta["db"] or active_db()   # history's None → CI sync DB
+            if odb and odb.exists():
+                other |= _title_keys(r["title"] for r in db_rows(
+                    "select title from videos", db_path=odb))
 
         def mine(entry: dict) -> bool:
             tag = entry.get("channel")
             if tag:
                 return tag == ch
             key = _title_key(entry.get("title") or "")
-            if ch == "blue":
-                return key in own        # untagged → only what sea DB knows
-            return key not in other      # untagged → old history rows stay in
+            if ch == "history":
+                return key not in other    # untagged → old history rows stay in
+            return key in own              # untagged → only what own DB knows
 
         vids = [v for v in (rumble_stats.get("videos") or []) if mine(v)]
         erows = [r for r in (rumble_stats.get("earnings_rows") or []) if mine(r)]
@@ -337,11 +366,12 @@ def api_topics(db_path: "Path | None" = None) -> list[dict]:
 
 
 def api_logs(ch: str = "history") -> dict:
-    if ch == "blue":
-        # The sea pipeline only exists in the cloud — no launchd log here.
+    if ch != "history":
+        # The sea/space pipelines only exist in the cloud — no launchd log.
+        meta = CHANNELS.get(ch, CHANNELS["history"])
         return {"lines": 0,
-                "text": "Blue Deep Facts = GitHub Actions pipeline "
-                        "(.github/workflows/cycle-sea.yml).\n"
+                "text": f"{meta['name']} = GitHub Actions pipeline "
+                        f"(.github/workflows/{meta['log'].split(' · ')[-1]}).\n"
                         "Mac pe kuch nahi chalta, isliye yahan local log "
                         "nahi hai.\nCloud logs:\n"
                         "https://github.com/techtricks/rumble-studio/actions"}
@@ -373,6 +403,8 @@ class Handler(BaseHTTPRequestHandler):
             self._send(200, "text/html", render_page("history").encode())
         elif parsed.path == "/blue":
             self._send(200, "text/html", render_page("blue").encode())
+        elif parsed.path == "/space":
+            self._send(200, "text/html", render_page("space").encode())
         elif parsed.path == "/api/status":
             self._json(api_status(ch=ch))
         elif parsed.path == "/api/videos":
@@ -562,6 +594,7 @@ PAGE = r"""<!doctype html>
       <div class="chgrp">
         <a href="{{HREF_HIST}}" class="{{ON_HIST}}"><span class="ic">📜</span>History Facts</a>
         <a href="{{HREF_BLUE}}" class="{{ON_BLUE}}"><span class="ic">🌊</span>Blue Deep Facts</a>
+        <a href="{{HREF_SPACE}}" class="{{ON_SPACE}}"><span class="ic">🪐</span>Space Facts</a>
       </div>
       <a data-go="dash"><span class="ic">▦</span>Dashboard</a>
       <a data-go="videos"><span class="ic">🎬</span>Videos</a>
@@ -875,6 +908,7 @@ refresh(); setInterval(refresh, 5000);
 
 def render_page(ch: str = "history", *, logout: str = "",
                 href_hist: str = "/", href_blue: str = "/blue",
+                href_space: str = "/space",
                 api_json: "str | None" = None) -> str:
     """Colour the ONE shared PAGE template for one channel's page.
 
@@ -894,8 +928,10 @@ def render_page(ch: str = "history", *, logout: str = "",
         ("{{CLOGS}}", meta["logs_label"]),
         ("{{HREF_HIST}}", href_hist),
         ("{{HREF_BLUE}}", href_blue),
+        ("{{HREF_SPACE}}", href_space),
         ("{{ON_HIST}}", "active" if ch == "history" else ""),
         ("{{ON_BLUE}}", "active" if ch == "blue" else ""),
+        ("{{ON_SPACE}}", "active" if ch == "space" else ""),
         ("{{APIJSON}}", api_json or f"'/api/all?ch={ch}'"),
     ):
         page = page.replace(key, val)
@@ -914,5 +950,6 @@ if __name__ == "__main__":
     except Exception as exc:  # noqa: BLE001 - dashboard still works local-only
         print(f"ci-sync disabled: {exc}", flush=True)
     print(f"ytauto dashboard → http://localhost:{PORT}  "
-          "(/ = History Facts, /blue = Blue Deep Facts)", flush=True)
+          "(/ = History Facts, /blue = Blue Deep Facts, "
+          "/space = Space Facts)", flush=True)
     ThreadingHTTPServer(("127.0.0.1", PORT), Handler).serve_forever()
